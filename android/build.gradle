@@ -1,0 +1,59 @@
+group 'com.lc0'
+version '1.0'
+
+buildscript {
+    repositories {
+        google()
+        jcenter()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:3.5.0'
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        jcenter()
+    }
+}
+
+apply plugin: 'com.android.library'
+
+task runBeforeCMake(type: Exec) {
+    workingDir '../'
+    commandLine 'bash', './fetchSources.sh'
+}
+
+preBuild.dependsOn runBeforeCMake
+
+android {
+    // add support for both AGP v8 and older versions
+    // https://github.com/flutter/flutter/issues/125621#issuecomment-1525995461
+    if (project.android.hasProperty("namespace")) {
+        namespace 'org.lichess.lc0'
+    }
+
+    compileSdkVersion 29
+
+    defaultConfig {
+        minSdkVersion 16
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++17"
+            }
+        }
+    }
+    lintOptions {
+        disable 'InvalidPackage'
+    }
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+        }
+    }
+}

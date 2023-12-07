@@ -1,0 +1,23 @@
+PODS:
+  - Flutter (3.13.0)
+  - lc0 (1.0.0):
+    - Flutter
+
+DEPENDENCIES:
+  - lc0 (from `../..`)
+
+SPEC REPOS:
+  trunk:
+    - Flutter
+
+EXTERNAL SOURCES:
+  lc0:
+    :path: "../.."
+
+SPEC CHECKSUMS:
+  Flutter: 8ff16720b007bae16abfe75ef9fe3ee45ead486a
+  lc0: 3c773c2c6c13e620c9ceec4b56e8884f54ae78fc
+
+PODFILE CHECKSUM: 7f439c77bb8ac60ef782fbc3a6dd780694610431
+
+COCOAPODS: 1.14.3

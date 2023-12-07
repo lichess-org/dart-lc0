@@ -1,0 +1,29 @@
+name: lc0
+description: Lc0 Flutter no GPU
+version: 1.0.0
+repository: https://github.com/lichess-org/dart-lc0.git
+homepage: https://github.com/lichess-org/dart-lc0.git
+
+environment:
+  sdk: '>=3.2.3 <4.0.0'
+  flutter: '>=3.0.0'
+
+dependencies:
+  ffi: ^2.0.0
+  flutter:
+    sdk: flutter
+  logging: ^1.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: lichess
+        pluginClass: Lc0Plugin
+      ios:
+        podspec: lc0.podspec
+        pluginClass: Lc0Plugin

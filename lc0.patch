@@ -1,0 +1,258 @@
+diff --git a/.gitignore b/.gitignore
+index c90b403..29cb4b5 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,5 +1,6 @@
+ !subprojects/*.wrap
+ *.swp
++*.o
+ .clang_complete
+ .DS_Store
+ .cache/
+@@ -10,6 +11,7 @@ compile_commands.json
+ CUDA_NN/
+ lc0.xcodeproj/
+ LC0VSProj/
++src/proto/
+ src/.vs/
+ subprojects/*
+ testdata/
+diff --git a/src/main.cc b/src/main.cc
+index 4c8880d..24e855c 100644
+--- a/src/main.cc
++++ b/src/main.cc
+@@ -52,21 +52,11 @@ int main(int argc, const char** argv) {
+ 
+     CommandLine::Init(argc, argv);
+     CommandLine::RegisterMode("uci", "(default) Act as UCI engine");
+-    CommandLine::RegisterMode("selfplay", "Play games with itself");
+     CommandLine::RegisterMode("benchmark", "Quick benchmark");
+     CommandLine::RegisterMode("backendbench",
+                               "Quick benchmark of backend only");
+-    CommandLine::RegisterMode("leela2onnx", "Convert Leela network to ONNX.");
+-    CommandLine::RegisterMode("onnx2leela",
+-                              "Convert ONNX network to Leela net.");
+-    CommandLine::RegisterMode("describenet",
+-                              "Shows details about the Leela network.");
+ 
+-    if (CommandLine::ConsumeCommand("selfplay")) {
+-      // Selfplay mode.
+-      SelfPlayLoop loop;
+-      loop.RunLoop();
+-    } else if (CommandLine::ConsumeCommand("benchmark")) {
++    if (CommandLine::ConsumeCommand("benchmark")) {
+       // Benchmark mode.
+       Benchmark benchmark;
+       benchmark.Run();
+@@ -74,12 +64,6 @@ int main(int argc, const char** argv) {
+       // Backend Benchmark mode.
+       BackendBenchmark benchmark;
+       benchmark.Run();
+-    } else if (CommandLine::ConsumeCommand("leela2onnx")) {
+-      lczero::ConvertLeelaToOnnx();
+-    } else if (CommandLine::ConsumeCommand("onnx2leela")) {
+-      lczero::ConvertOnnxToLeela();
+-    } else if (CommandLine::ConsumeCommand("describenet")) {
+-      lczero::DescribeNetworkCmd();
+     } else {
+       // Consuming optional "uci" mode.
+       CommandLine::ConsumeCommand("uci");
+diff --git a/src/mcts/stoppers/common.cc b/src/mcts/stoppers/common.cc
+index f969725..7c2664b 100644
+--- a/src/mcts/stoppers/common.cc
++++ b/src/mcts/stoppers/common.cc
+@@ -25,7 +25,7 @@
+   Program grant you additional permission to convey the resulting work.
+ */
+ 
+-#include "src/mcts/stoppers/common.h"
++#include "mcts/stoppers/common.h"
+ 
+ namespace lczero {
+ 
+diff --git a/src/mcts/stoppers/factory.cc b/src/mcts/stoppers/factory.cc
+deleted file mode 100644
+index e08e269..0000000
+--- a/src/mcts/stoppers/factory.cc
++++ /dev/null
+@@ -1,99 +0,0 @@
+-/*
+-  This file is part of Leela Chess Zero.
+-  Copyright (C) 2022 The LCZero Authors
+-
+-  Leela Chess is free software: you can redistribute it and/or modify
+-  it under the terms of the GNU General Public License as published by
+-  the Free Software Foundation, either version 3 of the License, or
+-  (at your option) any later version.
+-
+-  Leela Chess is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-  GNU General Public License for more details.
+-
+-  You should have received a copy of the GNU General Public License
+-  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+-
+-  Additional permission under GNU GPL version 3 section 7
+-
+-  If you modify this Program, or any covered work, by linking or
+-  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+-  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+-  modified version of those libraries), containing parts covered by the
+-  terms of the respective license agreement, the licensors of this
+-  Program grant you additional permission to convey the resulting work.
+-*/
+-
+-#include "mcts/stoppers/factory.h"
+-
+-#include <optional>
+-
+-#include "factory.h"
+-#include "mcts/stoppers/alphazero.h"
+-#include "mcts/stoppers/legacy.h"
+-#include "mcts/stoppers/simple.h"
+-#include "mcts/stoppers/smooth.h"
+-#include "mcts/stoppers/stoppers.h"
+-#include "utils/exception.h"
+-
+-namespace lczero {
+-namespace {
+-
+-const OptionId kMoveOverheadId{
+-    "move-overhead", "MoveOverheadMs",
+-    "Amount of time, in milliseconds, that the engine subtracts from it's "
+-    "total available time (to compensate for slow connection, interprocess "
+-    "communication, etc)."};
+-const OptionId kTimeManagerId{
+-    "time-manager", "TimeManager",
+-    "Name and config of a time manager. "
+-    "Possible names are 'legacy' (default), 'smooth', 'alphazero', and simple."
+-    "See https://lc0.org/timemgr for configuration details."};
+-}  // namespace
+-
+-void PopulateTimeManagementOptions(RunType for_what, OptionsParser* options) {
+-  PopulateCommonStopperOptions(for_what, options);
+-  if (for_what == RunType::kUci) {
+-    options->Add<IntOption>(kMoveOverheadId, 0, 100000000) = 200;
+-    options->Add<StringOption>(kTimeManagerId) = "legacy";
+-  }
+-}
+-
+-std::unique_ptr<TimeManager> MakeTimeManager(const OptionsDict& options) {
+-  const int64_t move_overhead = options.Get<int>(kMoveOverheadId);
+-
+-  OptionsDict tm_options;
+-  tm_options.AddSubdictFromString(options.Get<std::string>(kTimeManagerId));
+-
+-  const auto managers = tm_options.ListSubdicts();
+-
+-  std::unique_ptr<TimeManager> time_manager;
+-  if (managers.size() != 1) {
+-    throw Exception("Exactly one time manager should be specified, " +
+-                    std::to_string(managers.size()) + " specified instead.");
+-  }
+-
+-  if (managers[0] == "legacy") {
+-    time_manager =
+-        MakeLegacyTimeManager(move_overhead, tm_options.GetSubdict("legacy"));
+-  } else if (managers[0] == "alphazero") {
+-    time_manager = MakeAlphazeroTimeManager(move_overhead,
+-                                            tm_options.GetSubdict("alphazero"));
+-  } else if (managers[0] == "smooth") {
+-    time_manager =
+-        MakeSmoothTimeManager(move_overhead, tm_options.GetSubdict("smooth"));
+-  } else if (managers[0] == "simple") {
+-    time_manager =
+-        MakeSimpleTimeManager(move_overhead, tm_options.GetSubdict("simple"));
+-  }
+-
+-  if (!time_manager) {
+-    throw Exception("Unknown time manager: [" + managers[0] + "]");
+-  }
+-  tm_options.CheckAllOptionsRead("");
+-
+-  return MakeCommonTimeManager(std::move(time_manager), options, move_overhead);
+-}
+-
+-}  // namespace lczero
+diff --git a/src/mcts/stoppers/stoppers.cc b/src/mcts/stoppers/stoppers.cc
+index 9f99a42..06b53d5 100644
+--- a/src/mcts/stoppers/stoppers.cc
++++ b/src/mcts/stoppers/stoppers.cc
+@@ -26,7 +26,12 @@
+ */
+ 
+ #include "mcts/stoppers/stoppers.h"
+-
++#include "mcts/stoppers/factory.h"
++#include "mcts/stoppers/alphazero.h"
++#include "mcts/stoppers/legacy.h"
++#include "mcts/stoppers/simple.h"
++#include "mcts/stoppers/smooth.h"
++#include "utils/exception.h"
+ #include "mcts/node.h"
+ #include "neural/cache.h"
+ 
+@@ -255,5 +260,62 @@ bool SmartPruningStopper::ShouldStop(const IterationStats& stats,
+ 
+   return false;
+ }
++namespace {
++
++const OptionId kMoveOverheadId{
++    "move-overhead", "MoveOverheadMs",
++    "Amount of time, in milliseconds, that the engine subtracts from it's "
++    "total available time (to compensate for slow connection, interprocess "
++    "communication, etc)."};
++const OptionId kTimeManagerId{
++    "time-manager", "TimeManager",
++    "Name and config of a time manager. "
++    "Possible names are 'legacy' (default), 'smooth', 'alphazero', and simple."
++    "See https://lc0.org/timemgr for configuration details."};
++}  // namespace
++
++void PopulateTimeManagementOptions(RunType for_what, OptionsParser* options) {
++  PopulateCommonStopperOptions(for_what, options);
++  if (for_what == RunType::kUci) {
++    options->Add<IntOption>(kMoveOverheadId, 0, 100000000) = 200;
++    options->Add<StringOption>(kTimeManagerId) = "legacy";
++  }
++}
++
++std::unique_ptr<TimeManager> MakeTimeManager(const OptionsDict& options) {
++  const int64_t move_overhead = options.Get<int>(kMoveOverheadId);
++
++  OptionsDict tm_options;
++  tm_options.AddSubdictFromString(options.Get<std::string>(kTimeManagerId));
++
++  const auto managers = tm_options.ListSubdicts();
++
++  std::unique_ptr<TimeManager> time_manager;
++  if (managers.size() != 1) {
++    throw Exception("Exactly one time manager should be specified, " +
++                    std::to_string(managers.size()) + " specified instead.");
++  }
++
++  if (managers[0] == "legacy") {
++    time_manager =
++        MakeLegacyTimeManager(move_overhead, tm_options.GetSubdict("legacy"));
++  } else if (managers[0] == "alphazero") {
++    time_manager = MakeAlphazeroTimeManager(move_overhead,
++                                            tm_options.GetSubdict("alphazero"));
++  } else if (managers[0] == "smooth") {
++    time_manager =
++        MakeSmoothTimeManager(move_overhead, tm_options.GetSubdict("smooth"));
++  } else if (managers[0] == "simple") {
++    time_manager =
++        MakeSimpleTimeManager(move_overhead, tm_options.GetSubdict("simple"));
++  }
++
++  if (!time_manager) {
++    throw Exception("Unknown time manager: [" + managers[0] + "]");
++  }
++  tm_options.CheckAllOptionsRead("");
++
++  return MakeCommonTimeManager(std::move(time_manager), options, move_overhead);
++}
+ 
+ }  // namespace lczero
