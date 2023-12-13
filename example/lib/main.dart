@@ -1,10 +1,38 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:lc0/lc0.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import 'src/output_widget.dart';
 
+const weightsFileName = 'maia1500.pb.gz';
+
 void main() {
   runApp(const MyApp());
+}
+
+Future<String> maiaWeightsPath() async {
+  final directory = await getApplicationDocumentsDirectory();
+  return p.join(directory.path, weightsFileName);
+}
+
+Future<void> loadWeights(Lc0 lc0) async {
+  final path = await maiaWeightsPath();
+  final exists = await File(path).exists();
+
+  if (!exists) {
+    final ByteData data =
+        await rootBundle.load(p.url.join('assets', weightsFileName));
+    final List<int> bytes =
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+
+    await File(path).writeAsBytes(bytes, flush: true);
+  }
+
+  lc0.stdin = 'setoption name WeightsFile value $path';
 }
 
 class MyApp extends StatefulWidget {
@@ -20,6 +48,7 @@ class _AppState extends State<MyApp> {
   void initState() {
     super.initState();
     lc0 = Lc0();
+    loadWeights(lc0);
   }
 
   @override

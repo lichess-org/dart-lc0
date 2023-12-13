@@ -4,58 +4,58 @@ project(lc0)
 add_library(
   lc0
   SHARED
-  ../src/ffi.cpp
-  ../lc0/src/benchmark/backendbench.cc
-  ../lc0/src/benchmark/benchmark.cc
-  ../lc0/src/chess/bitboard.cc
-  ../lc0/src/chess/board.cc
-  ../lc0/src/chess/position.cc
-  ../lc0/src/chess/uciloop.cc
-  ../lc0/src/main.cc
-  ../lc0/src/mcts/node.cc
-  ../lc0/src/mcts/params.cc
-  ../lc0/src/mcts/stoppers/alphazero.cc
-  ../lc0/src/mcts/stoppers/legacy.cc
-  ../lc0/src/mcts/stoppers/simple.cc
-  ../lc0/src/mcts/stoppers/smooth.cc
-  ../lc0/src/mcts/stoppers/stoppers.cc
-  ../lc0/src/mcts/stoppers/timemgr.cc
-  ../lc0/src/mcts/stoppers/common.cc
-  ../lc0/src/mcts/search.cc
-  ../lc0/src/neural/blas/convolution1.cc
-  ../lc0/src/neural/blas/fully_connected_layer.cc
-  ../lc0/src/neural/blas/network_blas.cc
-  ../lc0/src/neural/blas/se_unit.cc
-  ../lc0/src/neural/blas/winograd_convolution3.cc
-  ../lc0/src/neural/cache.cc
-  ../lc0/src/neural/decoder.cc
-  ../lc0/src/neural/encoder.cc
-  ../lc0/src/neural/network_legacy.cc
-  ../lc0/src/neural/shared/activation.cc
-  ../lc0/src/neural/shared/winograd_filter.cc
-  ../lc0/src/neural/loader.cc
-  ../lc0/src/neural/factory.cc
-  ../lc0/src/syzygy/syzygy.cc
-  ../lc0/src/utils/commandline.cc
-  ../lc0/src/utils/configfile.cc
-  ../lc0/src/utils/esc_codes.cc
-  ../lc0/src/utils/files.cc
-  ../lc0/src/utils/filesystem.posix.cc
-  ../lc0/src/utils/fp16_utils.cc
-  ../lc0/src/utils/histogram.cc
-  ../lc0/src/utils/numa.cc
-  ../lc0/src/utils/optionsdict.cc
-  ../lc0/src/utils/protomessage.cc
-  ../lc0/src/utils/random.cc
-  ../lc0/src/utils/string.cc
-  ../lc0/src/utils/logging.cc
-  ../lc0/src/utils/optionsparser.cc
-  ../lc0/src/utils/weights_adapter.cc
-  ../lc0/src/version.cc
-  ../lc0/src/engine.cc
+  ../ios/src/ffi.cpp
+  ../ios/lc0/src/benchmark/backendbench.cc
+  ../ios/lc0/src/benchmark/benchmark.cc
+  ../ios/lc0/src/chess/bitboard.cc
+  ../ios/lc0/src/chess/board.cc
+  ../ios/lc0/src/chess/position.cc
+  ../ios/lc0/src/chess/uciloop.cc
+  ../ios/lc0/src/main.cc
+  ../ios/lc0/src/mcts/node.cc
+  ../ios/lc0/src/mcts/params.cc
+  ../ios/lc0/src/mcts/stoppers/alphazero.cc
+  ../ios/lc0/src/mcts/stoppers/legacy.cc
+  ../ios/lc0/src/mcts/stoppers/simple.cc
+  ../ios/lc0/src/mcts/stoppers/smooth.cc
+  ../ios/lc0/src/mcts/stoppers/stoppers.cc
+  ../ios/lc0/src/mcts/stoppers/timemgr.cc
+  ../ios/lc0/src/mcts/stoppers/common.cc
+  ../ios/lc0/src/mcts/search.cc
+  ../ios/lc0/src/neural/blas/convolution1.cc
+  ../ios/lc0/src/neural/blas/fully_connected_layer.cc
+  ../ios/lc0/src/neural/blas/network_blas.cc
+  ../ios/lc0/src/neural/blas/se_unit.cc
+  ../ios/lc0/src/neural/blas/winograd_convolution3.cc
+  ../ios/lc0/src/neural/cache.cc
+  ../ios/lc0/src/neural/decoder.cc
+  ../ios/lc0/src/neural/encoder.cc
+  ../ios/lc0/src/neural/network_legacy.cc
+  ../ios/lc0/src/neural/shared/activation.cc
+  ../ios/lc0/src/neural/shared/winograd_filter.cc
+  ../ios/lc0/src/neural/loader.cc
+  ../ios/lc0/src/neural/factory.cc
+  ../ios/lc0/src/syzygy/syzygy.cc
+  ../ios/lc0/src/utils/commandline.cc
+  ../ios/lc0/src/utils/configfile.cc
+  ../ios/lc0/src/utils/esc_codes.cc
+  ../ios/lc0/src/utils/files.cc
+  ../ios/lc0/src/utils/filesystem.posix.cc
+  ../ios/lc0/src/utils/fp16_utils.cc
+  ../ios/lc0/src/utils/histogram.cc
+  ../ios/lc0/src/utils/numa.cc
+  ../ios/lc0/src/utils/optionsdict.cc
+  ../ios/lc0/src/utils/protomessage.cc
+  ../ios/lc0/src/utils/random.cc
+  ../ios/lc0/src/utils/string.cc
+  ../ios/lc0/src/utils/logging.cc
+  ../ios/lc0/src/utils/optionsparser.cc
+  ../ios/lc0/src/utils/weights_adapter.cc
+  ../ios/lc0/src/version.cc
+  ../ios/lc0/src/engine.cc
 )
 
-include_directories(../eigen ../lc0/src ../lc0 ../src)
+include_directories(../ios/eigen ../ios/lc0/src ../ios/lc0 ../ios/src)
 
 if(ANDROID_ABI STREQUAL arm64-v8a)
   target_compile_options(lc0 PRIVATE -DEIGEN_NO_CPUID -DUSE_PTHREADS -DNDEBUG -O3 -DIS_64BIT -DNO_PEXT -DUSE_POPCNT)

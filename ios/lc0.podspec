@@ -6,19 +6,19 @@
 require 'yaml'
 
 root = __dir__
-pubspec = YAML.load(File.read(File.join(__dir__, 'pubspec.yaml')))
+pubspec = YAML.load(File.read(File.join(__dir__, '../pubspec.yaml')))
 
 Pod::Spec.new do |s|
   s.name             = pubspec['name']
   s.version          = pubspec['version']
   s.summary          = pubspec['description']
   s.homepage         = pubspec['homepage']
-  s.license          = { :file => 'LICENSE', :type => 'GPL' }
+  s.license          = { :file => '../LICENSE', :type => 'GPL' }
   s.author           = 'T-Bone Duplexus'
   s.source = { :git => pubspec['repository'], :tag => s.version.to_s }
   s.source_files = [
-    'ios/Classes/Lc0Plugin.mm',
-    'ios/Classes/Lc0Plugin.h',
+    'Classes/Lc0Plugin.mm',
+    'Classes/Lc0Plugin.h',
     'src/ffi.cpp',
     'lc0/src/benchmark/backendbench.cc',
     'lc0/src/benchmark/benchmark.cc',
@@ -82,7 +82,7 @@ Pod::Spec.new do |s|
     'OTHER_LDFLAGS' => '$(inherited) -w -std=c++17 -DUSE_PTHREADS -DNDEBUG -O3 -DIS_64BIT -DNO_PEXT'# -flto=thin'
   }
   s.prepare_command = <<-CMD
-    bash fetchSources.sh
+    bash ../fetchSources.sh
   CMD
 
 end
