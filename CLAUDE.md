@@ -22,7 +22,10 @@ dart format lib/
 bash fetchSources.sh
 ```
 
-There are no Dart/Flutter unit tests in this repository.
+```bash
+# Run tests
+flutter test
+```
 
 ## Architecture
 

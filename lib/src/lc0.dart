@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ffi';
 import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
@@ -10,6 +9,14 @@ import 'ffi.dart';
 import 'lc0_state.dart';
 
 final _logger = Logger('Lc0');
+
+/// Zone key for overriding isolate spawning in tests.
+@visibleForTesting
+const lc0SpawnIsolatesKey = #_lc0SpawnIsolates;
+
+/// Zone key for overriding stdin write in tests.
+@visibleForTesting
+const lc0StdinWriteKey = #_lc0StdinWrite;
 
 /// A wrapper for the Lc0 chess engine.
 ///
@@ -60,7 +67,15 @@ class Lc0 {
 
     _logger.finest('[stdin] $line');
 
-    final pointer = '$line\n'.toNativeUtf8();
+    final data = '$line\n';
+
+    final stdinOverride = Zone.current[lc0StdinWriteKey];
+    if (stdinOverride != null) {
+      (stdinOverride as void Function(String))(data);
+      return;
+    }
+
+    final pointer = data.toNativeUtf8();
     nativeStdinWrite(pointer);
     calloc.free(pointer);
   }
@@ -88,7 +103,10 @@ class Lc0 {
   Future<void> _doStart() async {
     _state._setValue(Lc0State.starting);
 
-    final success = await _spawnIsolates(_mainPort.sendPort, _stdoutPort.sendPort);
+    final success = await _spawnIsolates(
+      _mainPort.sendPort,
+      _stdoutPort.sendPort,
+    );
 
     if (!success) {
       _logger.severe('Failed to spawn isolates');
@@ -190,6 +208,14 @@ void _isolateStdout(SendPort stdoutPort) {
 }
 
 Future<bool> _spawnIsolates(SendPort mainPort, SendPort stdoutPort) async {
+  final override = Zone.current[lc0SpawnIsolatesKey];
+  if (override != null) {
+    return await (override as Future<bool> Function(SendPort, SendPort))(
+      mainPort,
+      stdoutPort,
+    );
+  }
+
   try {
     await Isolate.spawn(_isolateStdout, stdoutPort,
         debugName: 'Lc0 stdout isolate');
