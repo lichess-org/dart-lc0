@@ -19,7 +19,7 @@ Future<String> maiaWeightsPath() async {
   return p.join(directory.path, weightsFileName);
 }
 
-Future<void> loadWeights(Lc0 lc0) async {
+Future<void> loadWeights() async {
   final path = await maiaWeightsPath();
   final exists = await File(path).exists();
 
@@ -32,7 +32,7 @@ Future<void> loadWeights(Lc0 lc0) async {
     await File(path).writeAsBytes(bytes, flush: true);
   }
 
-  lc0.stdin = 'setoption name WeightsFile value $path';
+  Lc0.instance.stdin = 'setoption name WeightsFile value $path';
 }
 
 class MyApp extends StatefulWidget {
@@ -42,13 +42,12 @@ class MyApp extends StatefulWidget {
 }
 
 class _AppState extends State<MyApp> {
-  late Lc0 lc0;
+  final lc0 = Lc0.instance;
 
   @override
   void initState() {
     super.initState();
-    lc0 = Lc0();
-    loadWeights(lc0);
+    lc0.start().then((_) => loadWeights());
   }
 
   @override
@@ -75,13 +74,10 @@ class _AppState extends State<MyApp> {
               child: AnimatedBuilder(
                 animation: lc0.state,
                 builder: (_, __) => ElevatedButton(
-                  onPressed: lc0.state.value == Lc0State.disposed
-                      ? () {
-                          final newInstance = Lc0();
-                          setState(() => lc0 = newInstance);
-                        }
+                  onPressed: lc0.state.value == Lc0State.initial
+                      ? () => lc0.start().then((_) => loadWeights())
                       : null,
-                  child: const Text('Reset Lc0 instance'),
+                  child: const Text('Start Lc0'),
                 ),
               ),
             ),

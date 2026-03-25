@@ -4,7 +4,7 @@ A Flutter plugin that embeds the [Lc0](https://github.com/LeelaChessZero/lc0) (L
 
 ## Features
 
-- Runs Lc0 v0.29.0 in-process via Dart FFI
+- Runs Lc0 v0.32.1 in-process via Dart FFI
 - Communicates with the engine using the [UCI protocol](https://www.chessprogramming.org/UCI)
 - Non-blocking: engine runs in a Dart isolate
 - Supports any `.pb.gz` neural network weights file (e.g. [Maia](https://maiachess.com/))
@@ -28,26 +28,26 @@ dependencies:
 
 ## Usage
 
+`Lc0` is a singleton — access it via `Lc0.instance`.
+
 ```dart
 import 'package:lc0/lc0.dart';
 
-// Initialize the engine
-final lc0 = await Lc0.lc0Async();
+// Start the engine
+await Lc0.instance.start();
 
 // Listen to engine output
-lc0.stdout.listen((line) => print(line));
+Lc0.instance.stdout.listen((line) => print(line));
 
 // Load neural network weights (required before analysis)
-lc0.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
-lc0.stdin = 'isready'; // waits for "readyok"
+Lc0.instance.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
 
 // Analyze a position
-lc0.stdin = 'position startpos moves e2e4 e7e5';
-lc0.stdin = 'go movetime 3000';
+Lc0.instance.stdin = 'position startpos moves e2e4 e7e5';
+Lc0.instance.stdin = 'go movetime 3000';
 
-// Stop and clean up
-lc0.stdin = 'quit';
-lc0.dispose();
+// Stop the engine (can be restarted later with start())
+await Lc0.instance.quit();
 ```
 
 Check the [`example/`](example/) directory for a complete Flutter app that bundles and loads Maia weights.

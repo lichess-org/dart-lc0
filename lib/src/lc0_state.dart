@@ -1,14 +1,14 @@
 /// C++ engine state.
 enum Lc0State {
-  /// Engine has been stopped.
-  disposed,
-
-  /// An error occured (engine could not start).
-  error,
-
-  /// Engine is running.
-  ready,
+  /// Engine is not running.
+  initial,
 
   /// Engine is starting.
   starting,
+
+  /// Engine is running, ready to receive commands.
+  ready,
+
+  /// An error occurred (engine could not start).
+  error,
 }

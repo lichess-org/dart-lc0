@@ -18,7 +18,7 @@ dart analyze lib/
 # Format Dart code
 dart format lib/
 
-# Fetch Lc0 (v0.29.0) and Eigen (3.3.7) source files (required before native builds)
+# Fetch Lc0 (v0.32.1) and Eigen (3.4.0) source files (required before native builds)
 bash fetchSources.sh
 ```
 
@@ -29,9 +29,9 @@ There are no Dart/Flutter unit tests in this repository.
 The project has three layers:
 
 ### 1. Dart/Flutter Layer (`lib/`)
-- `lib/src/lc0.dart` — Core `Lc0` class. Manages two Dart isolates: one runs `nativeMain()` (blocks until engine exits), the other polls `nativeStdoutRead()` in a loop. Exposes `stdin` setter (sends UCI commands), `stdout` getter (`Stream<String>`), and `state` (`ValueListenable<Lc0State>`).
+- `lib/src/lc0.dart` — Core `Lc0` class. Singleton (`Lc0.instance`). `start()` spawns two Dart isolates: one runs `nativeMain()` (blocks until engine exits), the other polls `nativeStdoutRead()` in a loop. `quit()` sends the UCI `quit` command and waits for the engine to exit. Exposes `stdin` setter (sends UCI commands), `stdout` getter (`Stream<String>`), and `state` (`ValueListenable<Lc0State>`).
 - `lib/src/ffi.dart` — FFI bindings. On Android, opens `liblc0.so`; on iOS, uses `DynamicLibrary.process()`.
-- `lib/src/lc0_state.dart` — Lifecycle enum: `starting`, `ready`, `disposed`, `error`.
+- `lib/src/lc0_state.dart` — Lifecycle enum: `initial`, `starting`, `ready`, `error`.
 
 ### 2. C++ Bridge Layer (`ios/src/ffi.cpp`)
 Implements the three functions exported to Dart FFI:
@@ -40,13 +40,13 @@ Implements the three functions exported to Dart FFI:
 - `lc0_stdout_read()` — Reads a line from the engine's stdout pipe; returns `NULL` on `"quitok"` or error.
 
 ### 3. Lc0 Engine Layer (`ios/lc0/`, `android/lc0/`)
-Lc0 v0.29.0 source, patched via `lc0.patch` to remove `selfplay`, `leela2onnx`, `onnx2leela`, and `describenet` modes—only `uci` and `benchmark` are kept. Eigen 3.3.7 is used for linear algebra.
+Lc0 v0.32.1 source, patched via `lc0.patch` to remove `selfplay`, `leela2onnx`, `onnx2leela`, and `describenet` modes—only `uci` and `benchmark` are kept. Eigen 3.4.0 is used for linear algebra.
 
 ## Native Build Details
 
 ### iOS (`ios/lc0.podspec`)
 - Pre-build script: `bash ../fetchSources.sh`
-- C++17, flags: `-DUSE_PTHREADS -DEIGEN_NO_CPUID -DNDEBUG -O3 -DIS_64BIT -DNO_PEXT`
+- C++20, flags: `-DUSE_PTHREADS -DEIGEN_NO_CPUID -DNDEBUG -O3 -DIS_64BIT -DNO_PEXT`
 - Links `libz`
 
 ### Android (`android/CMakeLists.txt` + `android/build.gradle`)
@@ -56,23 +56,24 @@ Lc0 v0.29.0 source, patched via `lc0.patch` to remove `selfplay`, `leela2onnx`, 
 
 ## Key Usage Pattern
 
+`Lc0` is a singleton — always access it via `Lc0.instance`. The engine is not started automatically; call `start()` explicitly and `quit()` to stop it (it can be restarted after quitting).
+
 ```dart
-// Initialize engine
-final lc0 = await Lc0.lc0Async();
+// Start engine (returns Future that completes when ready)
+await Lc0.instance.start();
 
 // Listen to engine output
-lc0.stdout.listen((line) => print(line));
+Lc0.instance.stdout.listen((line) => print(line));
 
 // Load weights (required before analysis)
-lc0.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
+Lc0.instance.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
 
 // Send UCI commands
-lc0.stdin = 'isready';
-lc0.stdin = 'position startpos moves e2e4';
-lc0.stdin = 'go movetime 3000';
+Lc0.instance.stdin = 'position startpos moves e2e4';
+Lc0.instance.stdin = 'go movetime 3000';
 
-// Cleanup
-lc0.dispose();
+// Stop engine (returns Future; engine can be restarted with start())
+await Lc0.instance.quit();
 ```
 
 The example app (`example/`) bundles `maia1500.pb.gz` weights in assets and copies them to the app's documents directory on first launch before loading.

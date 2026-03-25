@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ffi';
 import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
@@ -10,56 +11,38 @@ import 'lc0_state.dart';
 
 final _logger = Logger('Lc0');
 
-/// A wrapper for C++ engine.
+/// A wrapper for the Lc0 chess engine.
+///
+/// This is a singleton - use [Lc0.instance] to access it.
+///
+/// Call [start] to start the engine and [quit] to stop it.
+/// The engine can be restarted after quitting.
 class Lc0 {
-  final Completer<Lc0>? completer;
+  /// The singleton instance of Lc0.
+  static final Lc0 instance = Lc0._();
 
   final _state = _Lc0State();
   final _stdoutController = StreamController<String>.broadcast();
-  final _mainPort = ReceivePort();
-  final _stdoutPort = ReceivePort();
+  final _mainPort = ReceivePort('Lc0 main isolate port');
+  final _stdoutPort = ReceivePort('Lc0 stdout isolate port');
 
-  late StreamSubscription _mainSubscription;
-  late StreamSubscription _stdoutSubscription;
+  Future<void>? _pendingStart;
+  Future<void>? _pendingQuit;
 
-  Lc0._({this.completer}) {
-    _mainSubscription =
-        _mainPort.listen((message) => _cleanUp(message is int ? message : 1));
-    _stdoutSubscription = _stdoutPort.listen((message) {
+  Lc0._() {
+    _mainPort.listen((message) {
+      _logger.fine('The main isolate sent $message');
+      _onEngineExit(message is int ? message : 1);
+    });
+
+    _stdoutPort.listen((message) {
       if (message is String) {
+        _logger.finest('[stdout] $message');
         _stdoutController.sink.add(message);
       } else {
         _logger.fine('The stdout isolate sent $message');
       }
     });
-    compute(_spawnIsolates, [_mainPort.sendPort, _stdoutPort.sendPort]).then(
-      (success) {
-        final state = success ? Lc0State.ready : Lc0State.error;
-        _state._setValue(state);
-        if (state == Lc0State.ready) {
-          completer?.complete(this);
-        }
-      },
-      onError: (error) {
-        _logger.severe('The init isolate encountered an error $error');
-        _cleanUp(1);
-      },
-    );
-  }
-
-  static Lc0? _instance;
-
-  /// Creates a C++ engine.
-  ///
-  /// This may throws a [StateError] if an active instance is being used.
-  /// Owner must [dispose] it before a new instance can be created.
-  factory Lc0() {
-    if (_instance != null) {
-      throw new StateError('Multiple instances are not supported, yet.');
-    }
-
-    _instance = Lc0._();
-    return _instance!;
   }
 
   /// The current state of the underlying C++ engine.
@@ -75,44 +58,100 @@ class Lc0 {
       throw StateError('Lc0 is not ready ($stateValue)');
     }
 
+    _logger.finest('[stdin] $line');
+
     final pointer = '$line\n'.toNativeUtf8();
     nativeStdinWrite(pointer);
     calloc.free(pointer);
   }
 
-  /// Stops the C++ engine.
-  void dispose() {
-    stdin = 'quit';
+  /// Starts the C++ engine.
+  ///
+  /// Returns a [Future] that completes when the engine is ready to accept commands.
+  ///
+  /// It is safe to call [start] while a previous start is in progress;
+  /// subsequent calls will wait for the first to complete.
+  Future<void> start() {
+    if (_pendingStart != null) {
+      return _pendingStart!;
+    }
+
+    if (_state.value != Lc0State.initial && _state.value != Lc0State.error) {
+      throw StateError(
+        'Lc0 is already running. Call quit() before starting again.',
+      );
+    }
+
+    return _pendingStart = _doStart().whenComplete(() => _pendingStart = null);
   }
 
-  void _cleanUp(int exitCode) {
-    _stdoutController.close();
+  Future<void> _doStart() async {
+    _state._setValue(Lc0State.starting);
 
-    _mainSubscription.cancel();
-    _stdoutSubscription.cancel();
+    final success = await _spawnIsolates(_mainPort.sendPort, _stdoutPort.sendPort);
 
-    _state._setValue(exitCode == 0 ? Lc0State.disposed : Lc0State.error);
+    if (!success) {
+      _logger.severe('Failed to spawn isolates');
+      _state._setValue(Lc0State.error);
+      throw Exception('Failed to spawn isolates');
+    }
 
-    _instance = null;
-  }
-}
-
-/// Creates a C++ engine asynchronously.
-///
-/// This method is different from the factory method [Lc0.new] that
-/// it will wait for the engine to be ready before returning the instance.
-Future<Lc0> lc0Async() {
-  if (Lc0._instance != null) {
-    return Future.error(StateError('Only one instance can be used at a time'));
+    _state._setValue(Lc0State.ready);
   }
 
-  final completer = Completer<Lc0>();
-  Lc0._instance = Lc0._(completer: completer);
-  return completer.future;
+  /// Quits the C++ engine.
+  ///
+  /// Returns a [Future] that completes when the engine has exited.
+  ///
+  /// After quitting, the engine can be started again with [start].
+  ///
+  /// It is safe to call [quit] multiple times; subsequent calls will wait
+  /// for the first to complete.
+  Future<void> quit() {
+    if (_pendingQuit != null) {
+      return _pendingQuit!;
+    }
+
+    switch (_state.value) {
+      case Lc0State.initial:
+      case Lc0State.error:
+        return Future.value();
+      case Lc0State.starting:
+      case Lc0State.ready:
+        return _pendingQuit = _doQuit().whenComplete(() => _pendingQuit = null);
+    }
+  }
+
+  Future<void> _doQuit() {
+    final completer = Completer<void>();
+
+    void onStateChange() {
+      switch (_state.value) {
+        case Lc0State.ready:
+          stdin = 'quit';
+        case Lc0State.initial:
+        case Lc0State.error:
+          _state.removeListener(onStateChange);
+          completer.complete();
+        default:
+          break;
+      }
+    }
+
+    _state.addListener(onStateChange);
+    if (_state.value == Lc0State.ready) {
+      stdin = 'quit';
+    }
+    return completer.future;
+  }
+
+  void _onEngineExit(int exitCode) {
+    _state._setValue(exitCode == 0 ? Lc0State.initial : Lc0State.error);
+  }
 }
 
 class _Lc0State extends ChangeNotifier implements ValueListenable<Lc0State> {
-  Lc0State _value = Lc0State.starting;
+  Lc0State _value = Lc0State.initial;
 
   @override
   Lc0State get value => _value;
@@ -127,7 +166,6 @@ class _Lc0State extends ChangeNotifier implements ValueListenable<Lc0State> {
 void _isolateMain(SendPort mainPort) {
   final exitCode = nativeMain();
   mainPort.send(exitCode);
-
   _logger.fine('nativeMain returns $exitCode');
 }
 
@@ -151,16 +189,17 @@ void _isolateStdout(SendPort stdoutPort) {
   }
 }
 
-Future<bool> _spawnIsolates(List<SendPort> mainAndStdout) async {
+Future<bool> _spawnIsolates(SendPort mainPort, SendPort stdoutPort) async {
   try {
-    await Isolate.spawn(_isolateStdout, mainAndStdout[1]);
+    await Isolate.spawn(_isolateStdout, stdoutPort,
+        debugName: 'Lc0 stdout isolate');
   } catch (error) {
     _logger.severe('Failed to spawn stdout isolate: $error');
     return false;
   }
 
   try {
-    await Isolate.spawn(_isolateMain, mainAndStdout[0]);
+    await Isolate.spawn(_isolateMain, mainPort, debugName: 'Lc0 main isolate');
   } catch (error) {
     _logger.severe('Failed to spawn main isolate: $error');
     return false;
