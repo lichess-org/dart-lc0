@@ -2,27 +2,20 @@ PODS:
   - Flutter (1.0.0)
   - lc0 (1.0.0):
     - Flutter
-  - path_provider_foundation (0.0.1):
-    - Flutter
-    - FlutterMacOS
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
   - lc0 (from `.symlinks/plugins/lc0/ios`)
-  - path_provider_foundation (from `.symlinks/plugins/path_provider_foundation/darwin`)
 
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
   lc0:
     :path: ".symlinks/plugins/lc0/ios"
-  path_provider_foundation:
-    :path: ".symlinks/plugins/path_provider_foundation/darwin"
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   lc0: 7224a8b73eb1d947d27a2e0e0c3294f6c62933a9
-  path_provider_foundation: 2a68637f8a62df7f6e790a428d1bdf72cb4e2d59
 
 PODFILE CHECKSUM: 0e10403ab348d7c2278784a45e2ea1e14f8fd421
 
