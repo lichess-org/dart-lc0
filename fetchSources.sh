@@ -3,10 +3,10 @@
 cd "$(dirname "${BASH_SOURCE:-$0}")"
 
 if [ ! -d "ios/eigen" ]; then
-  git clone -b 3.3.7 --depth 1 https://gitlab.com/libeigen/eigen ios/eigen
+  git clone -b 3.4.0 --depth 1 https://gitlab.com/libeigen/eigen ios/eigen
 fi
 if [ ! -d "ios/lc0" ]; then
-  git clone -b v0.29.0 --depth 1 https://github.com/LeelaChessZero/lc0 ios/lc0
+  git clone -b v0.32.1 --depth 1 https://github.com/LeelaChessZero/lc0 ios/lc0
   pushd ios/lc0 > /dev/null
   git submodule update --init --recursive
   mkdir src/proto
