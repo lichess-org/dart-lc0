@@ -105,10 +105,13 @@ index f919cd2..4c11d28 100644
  }
  
  }  // namespace lczero
-diff --git a/src/main.cc b/src/main.cc
-index f6d90c0..1011033 100644
+diff --git a/src/main.cc b/src/engine_main.cc
+similarity index 79%
+rename from src/main.cc
+rename to src/engine_main.cc
+index f6d90c0..089e901 100644
 --- a/src/main.cc
-+++ b/src/main.cc
++++ b/src/engine_main.cc
 @@ -29,12 +29,8 @@
  #include "default_search.h"
  #include "engine.h"
@@ -122,22 +125,24 @@ index f6d90c0..1011033 100644
  #include "utils/commandline.h"
  #include "utils/esc_codes.h"
  #include "utils/logging.h"
-@@ -75,7 +71,13 @@ void ChooseAndRunEngine() {
+@@ -75,7 +71,15 @@ void ChooseAndRunEngine() {
  }
  }  // namespace lczero
  
 -int main(int argc, const char** argv) {
-+// Renamed from main().
++// Renamed from main(), and this file with it.
 +//
-+// Two reasons. Calling main() is not allowed in C++, and the plugin's shim has
-+// to call this to run the engine. And a global main() cannot be merged into a
-+// host application's binary, which is what Swift Package Manager does with a
-+// plugin's object code -- it would collide with the app's own entry point.
++// Three reasons. Calling main() is not allowed in C++, and the plugin's shim has
++// to call this to run the engine. A global main() cannot be merged into a host
++// application's binary, which is what Swift Package Manager does with a plugin's
++// object code -- it would collide with the app's own entry point. And SwiftPM
++// decides a target is an executable rather than a library by looking for a file
++// called main.cc, so the file's name has to go the same way as the symbol's.
 +int lc0_engine_main(int argc, const char** argv) {
    using namespace lczero;
    EscCodes::Init();
    LOGFILE << "Lc0 started.";
-@@ -89,16 +91,10 @@ int main(int argc, const char** argv) {
+@@ -89,16 +93,10 @@ int main(int argc, const char** argv) {
  
      CommandLine::Init(argc, argv);
      if (CommandLine::BinaryName().find("simple") == std::string::npos) {
@@ -154,7 +159,7 @@ index f6d90c0..1011033 100644
      }
      for (const std::string_view search_name :
           SearchManager::Get()->GetSearchNames()) {
-@@ -107,12 +103,7 @@ int main(int argc, const char** argv) {
+@@ -107,12 +105,7 @@ int main(int argc, const char** argv) {
            "Use \"" + std::string(search_name) + "\" search");
      }
  
@@ -168,7 +173,7 @@ index f6d90c0..1011033 100644
        // Benchmark mode, longer version.
        Benchmark benchmark;
        benchmark.Run();
-@@ -124,12 +115,6 @@ int main(int argc, const char** argv) {
+@@ -124,12 +117,6 @@ int main(int argc, const char** argv) {
        // Backend Benchmark mode.
        BackendBenchmark benchmark;
        benchmark.Run();

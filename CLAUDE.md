@@ -18,8 +18,8 @@ dart analyze lib/
 # Format Dart code
 dart format lib/
 
-# Fetch Lc0 (v0.32.1) and Eigen (3.4.0) source files (required before native builds)
-bash fetchSources.sh
+# Re-vendor the engine from upstream (maintainer's tool; its output is committed)
+tools/update_engine.sh
 ```
 
 ```bash
@@ -46,32 +46,58 @@ The project has three layers:
 - `lib/src/lc0_state.dart` — Lifecycle enum: `initial`, `starting`, `ready`, `error`, `disposed`.
 - `lib/src/lc0_diagnostics.dart` — `Lc0Phase` / `Lc0Diagnostics`, mirroring the `LC0_PHASE_*` codes the native shim publishes, and the `describe*Code` helpers for its return values. Deliberately the same shape as dart-multistockfish's, so an app hosting both reports their failures the same way.
 
-### 2. C++ Bridge Layer (`ios/src/`)
+### 2. C++ Bridge Layer (`ios/lc0/Sources/lc0/`)
 - `ffi.cpp` / `ffi.h` — the shim. `lc0_init()` creates the pipes once and drains them on a restart; `lc0_main()` binds the engine's streams to them and runs it, refusing to run twice over the same process globals; `lc0_stdin_write()` never blocks (the write side is non-blocking, and a pipe that stays full is reported rather than waited on); `lc0_stdout_read()` blocks until there is output and returns `NULL` when the engine is gone. `lc0_phase()`, `lc0_phase_step()`, `lc0_phase_elapsed_ms()` and `lc0_last_error()` publish where the engine got to, which is the only way to see a wedge from Dart.
+- `include/lc0/ffi.h` — the public header. In `include/` because SwiftPM requires a public headers directory per target.
 - `lc0io.cpp` / `lc0io.h` — **private engine I/O**. Two streams that replace `std::cin` and `std::cout` inside the engine, bound straight to the shim's pipe. This replaces a `dup2` onto the process's fd 0 and fd 1, which meant no other engine could be resident beside lc0 and the host app lost its own stdout while it ran. Ported from dart-multistockfish's `sfio.{h,cpp}`; keep the two in step.
 
-### 3. Lc0 Engine Layer (`ios/lc0/`, `android/lc0/`)
-Lc0 v0.32.1 source, patched via `lc0.patch`. The patch does two things: it removes the `selfplay`, `leela2onnx`, `onnx2leela` and `describenet` modes (only `uci` and `benchmark` are kept), and it points the engine's UCI channel at `lc0io::in()` / `lc0io::out()` instead of `std::cin` / `std::cout` — three sites, in `engine_loop.cc`, `chess/uciloop.cc` and `utils/logging.cc` — plus the two `lc0_set_phase()` calls that let the shim say whether a start is still booting or already in the loop. Eigen 3.4.0 is used for linear algebra.
+### 3. Lc0 Engine Layer (`ios/lc0/Sources/lc0/engine/`, `.../eigen/`)
 
-**`ios/lc0/` is not tracked**: `fetchSources.sh` clones it and applies `lc0.patch`. To change the engine, edit the working tree and regenerate the patch:
+Lc0 v0.32.1 and Eigen 3.4.0, **vendored** — committed to this repo rather than cloned at build
+time. Swift Package Manager has no equivalent of CocoaPods' `prepare_command`: an SPM target's
+sources have to be inside the package when Xcode resolves it. Only `Eigen/Core` is used, so only
+`eigen/Eigen` is vendored.
+
+`lc0.patch` is the diff from a pristine `v0.32.1`. It does three things:
+
+1. removes the `selfplay`, `leela2onnx`, `onnx2leela` and `describenet` modes (only `uci` and
+   `benchmark` are kept);
+2. points the engine's UCI channel at `lc0io::in()` / `lc0io::out()` instead of `std::cin` /
+   `std::cout` — three sites, in `engine_loop.cc`, `chess/uciloop.cc` and `utils/logging.cc` — plus
+   the two `lc0_set_phase()` calls that let the shim say whether a start is still booting or
+   already in the loop;
+3. renames `src/main.cc`'s `main()` to `lc0_engine_main()`, and the file with it. Calling `main()`
+   is not allowed in C++; a global `main()` would collide with the host application's own when the
+   plugin is statically merged into it, which is what SwiftPM does; and SwiftPM decides a target is
+   an executable rather than a library by looking for a file called `main.cc`.
+
+To bump the engine, edit `lc0.patch` (or apply it to a fresh clone, change what you need, and
+regenerate it with `git add -A && git diff --cached -M`), then re-vendor:
 
 ```bash
-cd ios/lc0
-git add -N src/default_backend.h src/default_search.h
-git diff > ../../lc0.patch
+tools/update_engine.sh            # defaults to v0.32.1
+tools/update_engine.sh v0.33.0    # or a different tag
 ```
+
+Keep `ios/lc0/Package.swift` and `android/CMakeLists.txt` in step with any files upstream adds or
+removes: both list the ~58 sources this build compiles, out of the 112 the engine ships.
 
 ## Native Build Details
 
-### iOS (`ios/lc0.podspec`)
-- Pre-build script: `bash ../fetchSources.sh`
-- C++20, flags: `-DUSE_PTHREADS -DEIGEN_NO_CPUID -DNDEBUG -O3 -DIS_64BIT -DNO_PEXT`
+### iOS — Swift Package (`ios/lc0/Package.swift`) and podspec (`ios/lc0.podspec`)
+Both are kept: Flutter uses the package when Swift Package Manager is enabled for the host app and
+the podspec otherwise, and the two must list the same sources and flags.
+- C++20, flags: `-w -DUSE_PTHREADS -DEIGEN_NO_CPUID -DNDEBUG -O3 -DIS_64BIT -DNO_PEXT`
 - Links `libz`
+- Under SwiftPM the plugin's object code is merged into the host application's own binary, which is
+  why the engine must not define a global `main()` and must not touch the process's descriptors.
 
 ### Android (`android/CMakeLists.txt` + `android/build.gradle`)
-- Gradle `runBeforeCMake` task runs `fetchSources.sh` before CMake
 - ABIs: `arm64-v8a`, `armeabi-v7a`, `x86_64`
-- Produces `liblc0.so`; links `libz.so`
+- Produces `liblc0.so` (~2.1 MB per ABI); links `libz.so`
+
+This is an **FFI plugin** (`ffiPlugin: true`): everything Dart talks to is a C symbol, so there is
+no plugin class to register on either platform.
 
 ## Key Usage Pattern
 

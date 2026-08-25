@@ -22,9 +22,11 @@ dev_dependencies:
 flutter:
   plugin:
     platforms:
+      # An FFI plugin: everything Dart talks to is a C symbol, so there is no
+      # plugin class to register. The stub ones that used to exist were only
+      # there to keep the linker from dropping those symbols, which is what
+      # ffiPlugin arranges properly.
       android:
-        package: lichess
-        pluginClass: Lc0Plugin
+        ffiPlugin: true
       ios:
-        podspec: lc0.podspec
-        pluginClass: Lc0Plugin
+        ffiPlugin: true

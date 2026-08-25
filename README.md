@@ -73,6 +73,15 @@ print(engine.diagnostics);  // phase=uciLoop step=uci_loop for 12ms
 
 Check the [`example/`](example/) directory for a complete Flutter app that bundles and loads Maia weights.
 
+## Building
+
+The engine and Eigen are vendored under `ios/lc0/Sources/lc0/`, so a checkout builds without
+fetching anything. The plugin ships both a Swift Package (`ios/lc0/Package.swift`) and a podspec;
+Flutter picks the package when Swift Package Manager is enabled for the host app.
+
+`tools/update_engine.sh` re-vendors the engine from upstream and re-applies `lc0.patch`. It is a
+maintainer's tool — its output is committed.
+
 ## Weights
 
 The engine requires a neural network weights file at runtime. You can use any Lc0-compatible `.pb.gz` weights file. The example app ships with `maia1500.pb.gz` from the [Maia Chess](https://maiachess.com/) project.

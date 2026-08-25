@@ -13,7 +13,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-src="$here/../ios/src"
+src="$here/../ios/lc0/Sources/lc0"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
@@ -21,7 +21,7 @@ echo "Building..."
 "${CXX:-clang++}" \
   -std=c++20 -O1 \
   -o "$out/shim_test" \
-  -I"$src" \
+  -I"$src" -I"$src/include/lc0" \
   "$src/ffi.cpp" \
   "$src/lc0io.cpp" \
   "$here/shim_test.cpp"

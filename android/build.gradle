@@ -24,17 +24,6 @@ rootProject.allprojects {
 
 apply plugin: "com.android.library"
 
-// The engine's sources are cloned and patched rather than vendored, so they have
-// to be there before CMake is configured.
-tasks.register("fetchSources", Exec) {
-    workingDir = file("..")
-    commandLine "bash", "./fetchSources.sh"
-}
-
-tasks.named("preBuild") {
-    dependsOn("fetchSources")
-}
-
 android {
     namespace = "org.lichess.lc0"
 

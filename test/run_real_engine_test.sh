@@ -13,8 +13,8 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$here/.."
 
-if [ ! -d "$root/ios/lc0" ]; then
-  echo "ios/lc0 is missing. Run ./fetchSources.sh first." >&2
+if [ ! -d "$root/ios/lc0/Sources/lc0/engine/src" ]; then
+  echo "The vendored engine is missing. Run tools/update_engine.sh." >&2
   exit 1
 fi
 
@@ -23,7 +23,9 @@ trap 'rm -rf "$out"' EXIT
 
 CXX="${CXX:-clang++}"
 flags=(-std=c++20 -w -O0 -DEIGEN_NO_CPUID -DUSE_PTHREADS -DNDEBUG -DIS_64BIT -DNO_PEXT -DUSE_POPCNT
-       -I"$root/ios/eigen" -I"$root/ios/lc0/src" -I"$root/ios/lc0" -I"$root/ios/src")
+       -I"$root/ios/lc0/Sources/lc0" -I"$root/ios/lc0/Sources/lc0/include/lc0"
+       -I"$root/ios/lc0/Sources/lc0/engine"
+       -I"$root/ios/lc0/Sources/lc0/engine/src" -I"$root/ios/lc0/Sources/lc0/eigen")
 
 # The engine's sources are whatever the Android build compiles, so the two cannot
 # drift apart.
