@@ -20,6 +20,7 @@ Pod::Spec.new do |s|
     'Classes/Lc0Plugin.mm',
     'Classes/Lc0Plugin.h',
     'src/ffi.cpp',
+    'src/lc0io.cpp',
     'lc0/src/main.cc',
     'lc0/src/engine.cc',
     'lc0/src/engine_loop.cc',

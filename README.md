@@ -28,26 +28,47 @@ dependencies:
 
 ## Usage
 
-`Lc0` is a singleton — access it via `Lc0.instance`.
+An engine is a handle: `Lc0.create()` starts one and completes once it has
+answered `uciok`, and `dispose()` releases it.
 
 ```dart
 import 'package:lc0/lc0.dart';
 
-// Start the engine
-await Lc0.instance.start();
+// Start the engine. Completes when it is ready for commands.
+final engine = await Lc0.create();
 
-// Listen to engine output
-Lc0.instance.stdout.listen((line) => print(line));
+// Listen to engine output. Pass `onStdout` to `create` instead if you need the
+// lines it writes while starting.
+engine.stdout.listen((line) => print(line));
 
 // Load neural network weights (required before analysis)
-Lc0.instance.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
+engine.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
 
 // Analyze a position
-Lc0.instance.stdin = 'position startpos moves e2e4 e7e5';
-Lc0.instance.stdin = 'go movetime 3000';
+engine.stdin = 'position startpos moves e2e4 e7e5';
+engine.stdin = 'go movetime 3000';
 
-// Stop the engine (can be restarted later with start())
-await Lc0.instance.quit();
+// Release it. The handle is single-use: call create() again for a fresh engine.
+await engine.dispose();
+```
+
+**One engine at a time.** lc0 keeps its command line, its option registry and its
+backend factories in process globals, so `create()` throws a `StateError` while
+another engine is live. Engines from *other* plugins are unaffected: this plugin
+no longer takes the process's stdin and stdout over, so an lc0 engine and a
+Stockfish engine can be resident side by side.
+
+### When something goes wrong
+
+The engine runs on a thread Dart does not own, so `engine.diagnostics` reports
+what the native side is doing — which phase it is in, which step of it, and for
+how long. Attach it to any report of an engine that would not start or would not
+quit; `Lc0Diagnostics.looksStuck` says when a transition has taken far longer
+than it should.
+
+```dart
+final engine = await Lc0.create();
+print(engine.diagnostics);  // phase=uciLoop step=uci_loop for 12ms
 ```
 
 Check the [`example/`](example/) directory for a complete Flutter app that bundles and loads Maia weights.

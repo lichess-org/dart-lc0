@@ -1,170 +1,428 @@
 import 'dart:async';
 import 'dart:isolate';
 
-import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
 
-import 'ffi.dart';
+import 'bindings.dart';
+import 'lc0_diagnostics.dart';
 import 'lc0_state.dart';
 
 final _logger = Logger('Lc0');
+
+/// Zone key for overriding bindings in tests.
+@visibleForTesting
+const lc0BindingsKey = #_lc0Bindings;
 
 /// Zone key for overriding isolate spawning in tests.
 @visibleForTesting
 const lc0SpawnIsolatesKey = #_lc0SpawnIsolates;
 
-/// Zone key for overriding stdin write in tests.
-@visibleForTesting
-const lc0StdinWriteKey = #_lc0StdinWrite;
+/// How long the engine is given to answer `uciok`.
+///
+/// Generous compared to a Stockfish start, because this is where the network is
+/// read off disk and the backend is built.
+const kStartTimeout = Duration(seconds: 30);
 
-/// A wrapper for the Lc0 chess engine.
+/// How long an engine is given to exit after being asked to quit, before it is
+/// abandoned.
+const kQuitTimeout = Duration(seconds: 5);
+
+/// A live Lc0 engine.
 ///
-/// This is a singleton - use [Lc0.instance] to access it.
+/// Obtain one with [Lc0.create], which starts the engine and completes once it
+/// has answered `uciok`, and release it with [dispose].
 ///
-/// Call [start] to start the engine and [quit] to stop it.
-/// The engine can be restarted after quitting.
+/// **One engine at a time.** lc0 keeps its command line, its option registry and
+/// its backend factories in process globals, so [create] throws a [StateError]
+/// while another engine holds the slot, and [dispose] frees it. Engines from
+/// *other* plugins are unaffected: since this plugin stopped hijacking the
+/// process's stdin and stdout, an lc0 engine and a Stockfish engine can be
+/// resident at the same time, each with its own [stdin], [stdout], [state] and
+/// [diagnostics].
+///
+/// A handle is single-use. Once [dispose] has been called, or the engine has
+/// exited on its own, that handle stays dead; call [create] again for a fresh
+/// one.
 class Lc0 {
-  /// The singleton instance of Lc0.
-  static final Lc0 instance = Lc0._();
+  Lc0._();
+
+  /// The engine currently holding the slot, if any.
+  static Lc0? _live;
+
+  /// The engine currently live.
+  ///
+  /// The slot is process-wide, so a test that leaves one claimed leaks it into
+  /// the next test.
+  @visibleForTesting
+  static Lc0? get debugLiveEngine => _live;
+
+  /// Starts an engine and completes when it has answered `uciok`.
+  ///
+  /// Throws a [StateError] if an engine is already live — call [dispose] on it
+  /// first — and a [TimeoutException] if the engine does not become ready
+  /// within [kStartTimeout]. A failed create frees the slot again, but an engine
+  /// that also refused to quit keeps its native state, and the next create may
+  /// be refused by the native library until the process restarts.
+  ///
+  /// Pass [onStdout] to see the engine's start-up output. This future does not
+  /// complete until the engine is ready, so a listener attached to [stdout]
+  /// afterwards has already missed the UCI handshake; [onStdout] is attached
+  /// before the engine is spawned and receives every line for its whole life.
+  static Future<Lc0> create({void Function(String line)? onStdout}) async {
+    // Claiming the slot before the first await is what makes two concurrent
+    // create() calls resolve to a refusal rather than to two engines racing
+    // each other into the same native globals.
+    final engine = Lc0._().._claimSlot();
+    if (onStdout != null) engine._stdoutController.stream.listen(onStdout);
+
+    try {
+      await engine._doStart();
+    } catch (_) {
+      engine._release(Lc0State.error, closeStdout: true);
+      rethrow;
+    }
+
+    return engine;
+  }
+
+  Lc0Bindings get _bindings => _resolveBindings();
 
   final _state = _Lc0State();
   final _stdoutController = StreamController<String>.broadcast();
-  final _mainPort = ReceivePort('Lc0 main isolate port');
-  final _stdoutPort = ReceivePort('Lc0 stdout isolate port');
 
-  Future<void>? _pendingStart;
-  Future<void>? _pendingQuit;
+  /// The engine currently owning the state, or null when none is running.
+  _RunningEngine? _engine;
 
-  Lc0._() {
-    _mainPort.listen((message) {
-      _logger.fine('The main isolate sent $message');
-      _onEngineExit(message is int ? message : 1);
-    });
+  Future<void>? _disposal;
 
-    _stdoutPort.listen((message) {
-      if (message is String) {
-        _logger.finest('[stdout] $message');
-        _stdoutController.sink.add(message);
-      } else {
-        _logger.fine('The stdout isolate sent $message');
-      }
-    });
-  }
+  /// Whether [dispose] has been called, recorded before anything it does can
+  /// make the engine exit, so that [_onEngineExit] knows the exit was asked for.
+  bool _disposing = false;
 
   /// The current state of the underlying C++ engine.
+  ///
+  /// A handle returned by [create] is [Lc0State.ready]. It ends as
+  /// [Lc0State.disposed] — after [dispose], or after the engine exits cleanly on
+  /// its own, as it does when sent `quit` over [stdin] — or as [Lc0State.error]
+  /// if it died badly. None of those is recoverable on this handle: create
+  /// another one.
   ValueListenable<Lc0State> get state => _state;
 
   /// The standard output stream.
+  ///
+  /// Closes when the engine is disposed.
   Stream<String> get stdout => _stdoutController.stream;
 
+  /// A snapshot of what the native engine is doing.
+  ///
+  /// Cheap to read at any time, including while the engine is wedged — the
+  /// values are atomics published by the native shim, not a round trip through
+  /// the engine. Attach it to any report of an engine that would not start or
+  /// would not quit.
+  Lc0Diagnostics get diagnostics {
+    final bindings = _bindings;
+    return Lc0Diagnostics(
+      phase: Lc0Phase.fromCode(bindings.phase()),
+      step: bindings.phaseStep(),
+      elapsed: Duration(milliseconds: bindings.phaseElapsedMs()),
+      lastError: bindings.lastError(),
+    );
+  }
+
   /// The standard input sink.
+  ///
+  /// A failed write is logged at [Level.SEVERE] along with [diagnostics] rather
+  /// than thrown, so that a broken engine does not turn every command site into
+  /// a try/catch. The write never blocks: if the engine has stopped reading its
+  /// input, this reports the failure instead of hanging the calling isolate.
+  ///
+  /// A failure that leaves the session unusable — see [Lc0WriteResult.isFatal] —
+  /// additionally moves [state] to [Lc0State.error], so subsequent commands
+  /// throw rather than pile onto a channel the engine can no longer read
+  /// correctly.
   set stdin(String line) {
     final stateValue = _state.value;
     if (stateValue != Lc0State.ready) {
       throw StateError('Lc0 is not ready ($stateValue)');
     }
 
-    _logger.finest('[stdin] $line');
-
-    final data = '$line\n';
-
-    final stdinOverride = Zone.current[lc0StdinWriteKey];
-    if (stdinOverride != null) {
-      (stdinOverride as void Function(String))(data);
-      return;
-    }
-
-    final pointer = data.toNativeUtf8();
-    nativeStdinWrite(pointer);
-    calloc.free(pointer);
+    _write(line);
   }
 
-  /// Starts the C++ engine.
+  /// Sends a line to the engine, returning the native write result.
   ///
-  /// Returns a [Future] that completes when the engine is ready to accept commands.
-  ///
-  /// It is safe to call [start] while a previous start is in progress;
-  /// subsequent calls will wait for the first to complete.
-  Future<void> start() {
-    if (_pendingStart != null) {
-      return _pendingStart!;
-    }
+  /// Negative values are failures described by [describeWriteCode]. They are
+  /// logged here so that every caller reports them the same way, and returned so
+  /// that callers who cannot simply carry on — [dispose] in particular — can act
+  /// on them.
+  int _write(String line) {
+    _logger.finest('[stdin] $line');
 
-    if (_state.value != Lc0State.initial && _state.value != Lc0State.error) {
+    final written = _bindings.stdinWrite('$line\n');
+    if (written < 0) {
+      _logger.severe(
+        'Failed to send "$line" to the engine: ${describeWriteCode(written)}. '
+        '$diagnostics',
+      );
+
+      if (Lc0WriteResult.isFatal(written)) {
+        // The engine can no longer be sent a coherent command stream, so this
+        // session is over whatever the engine itself does next. Failing the
+        // state here makes the rest of the API refuse work until the caller
+        // starts another engine, instead of letting commands accumulate on a
+        // broken channel and be answered with nonsense.
+        _logger.severe(
+          'The engine session is unrecoverable and has been marked failed. '
+          'Dispose this engine and create another one.',
+        );
+        _state._setValue(Lc0State.error);
+      }
+    }
+    return written;
+  }
+
+  /// Takes the slot, or throws if another engine still holds it.
+  void _claimSlot() {
+    if (_live != null) {
       throw StateError(
-        'Lc0 is already running. Call quit() before starting again.',
+        'An lc0 engine is already live. Dispose it before creating another '
+        'one. (Engines from other plugins are unaffected and can run alongside '
+        'it.)',
       );
     }
+    _live = this;
+  }
 
-    return _pendingStart = _doStart().whenComplete(() => _pendingStart = null);
+  /// Gives the slot back, if this engine still holds it.
+  void _releaseSlot() {
+    if (identical(_live, this)) _live = null;
   }
 
   Future<void> _doStart() async {
-    _state._setValue(Lc0State.starting);
+    late final _RunningEngine engine;
+    engine = _RunningEngine(
+      onExit: (exitCode) {
+        if (identical(_engine, engine)) _engine = null;
+        _onEngineExit(exitCode);
+      },
+      onStdout: (line) {
+        if (!_stdoutController.isClosed) _stdoutController.add(line);
+      },
+    );
+    _engine = engine;
 
     final success = await _spawnIsolates(
-      _mainPort.sendPort,
-      _stdoutPort.sendPort,
+      engine.mainPort.sendPort,
+      engine.stdoutPort.sendPort,
     );
 
     if (!success) {
       _logger.severe('Failed to spawn isolates');
-      _state._setValue(Lc0State.error);
+      _engine = null;
+      engine.dispose();
       throw Exception('Failed to spawn isolates');
     }
 
-    _state._setValue(Lc0State.ready);
+    _state._setValue(Lc0State.starting);
+
+    try {
+      // Unlike Stockfish, lc0 writes nothing to its output before it is asked
+      // to: its banner goes to the log, not to the UCI channel. So there is no
+      // greeting to wait for, and the handshake itself is what says the engine
+      // is up. The command sits in the pipe until the engine reaches its loop,
+      // which is exactly the wait this is here to make.
+      _state._setValue(Lc0State.ready);
+      stdin = 'uci';
+      await _awaitLine(engine, (line) => line.trim() == 'uciok');
+    } on TimeoutException {
+      // Read the diagnostics before asking the engine to quit: doing so moves it
+      // on to another phase and would erase the evidence of where it stalled.
+      final stalledAt = diagnostics;
+      _logger.severe(
+        'The engine did not become ready in time (${kStartTimeout.inSeconds}s). '
+        '$stalledAt',
+      );
+      await _quitEngine(engine);
+      throw TimeoutException(
+        'Lc0 did not become ready in time. $stalledAt',
+        kStartTimeout,
+      );
+    }
   }
 
-  /// Quits the C++ engine.
+  /// Waits for [engine] to print a line matching [test].
   ///
-  /// Returns a [Future] that completes when the engine has exited.
-  ///
-  /// After quitting, the engine can be started again with [start].
-  ///
-  /// It is safe to call [quit] multiple times; subsequent calls will wait
-  /// for the first to complete.
-  Future<void> quit() {
-    if (_pendingQuit != null) {
-      return _pendingQuit!;
-    }
-
-    switch (_state.value) {
-      case Lc0State.initial:
-      case Lc0State.error:
-        return Future.value();
-      case Lc0State.starting:
-      case Lc0State.ready:
-        return _pendingQuit = _doQuit().whenComplete(() => _pendingQuit = null);
-    }
-  }
-
-  Future<void> _doQuit() {
+  /// Throws a [TimeoutException] after [kStartTimeout], and gives up as soon as
+  /// the engine exits instead: an engine the native library refused to run
+  /// reports that in milliseconds, and waiting out the timeout would replace a
+  /// precise answer with a vague one.
+  Future<void> _awaitLine(
+    _RunningEngine engine,
+    bool Function(String line) test,
+  ) {
     final completer = Completer<void>();
 
-    void onStateChange() {
-      switch (_state.value) {
-        case Lc0State.ready:
-          stdin = 'quit';
-        case Lc0State.initial:
-        case Lc0State.error:
-          _state.removeListener(onStateChange);
-          completer.complete();
-        default:
-          break;
+    final subscription = _stdoutController.stream.listen((line) {
+      if (!completer.isCompleted && test(line)) completer.complete();
+    });
+
+    unawaited(
+      engine.exited.future.then((exitCode) {
+        if (completer.isCompleted) return;
+        completer.completeError(
+          Exception(
+            'The engine exited while starting '
+            '${exitCode == null ? '' : '(code $exitCode: '
+                '${describeMainExitCode(exitCode)}) '}'
+            'and will never become ready. $diagnostics',
+          ),
+        );
+      }),
+    );
+
+    return completer.future
+        .timeout(kStartTimeout)
+        .whenComplete(subscription.cancel);
+  }
+
+  /// Quits the engine and frees the slot.
+  ///
+  /// Completes when the engine has exited. It is safe to call more than once and
+  /// safe to call on an engine that has already died; later calls wait for the
+  /// first.
+  ///
+  /// An engine that does not exit within [kQuitTimeout] is abandoned: the slot is
+  /// freed and everything the engine sends afterwards is dropped, but it keeps
+  /// the native state it is stuck in, so a later [create] may be refused until
+  /// the process restarts.
+  Future<void> dispose() {
+    _disposing = true;
+    return _disposal ??= _doDispose();
+  }
+
+  Future<void> _doDispose() async {
+    final engine = _engine;
+    if (engine != null) await _quitEngine(engine);
+
+    // A handle that already failed goes on saying so. Disposing it is not what
+    // went wrong, and of the two facts the failure is the one worth keeping.
+    _release(
+      _state.value == Lc0State.error ? Lc0State.error : Lc0State.disposed,
+      closeStdout: true,
+    );
+  }
+
+  /// Asks [engine] to quit and waits for it to exit.
+  ///
+  /// Waiting matters even where the caller has stopped caring: another engine
+  /// may be created as soon as this returns, and one still winding down would
+  /// otherwise report its exit while its successor runs.
+  Future<void> _quitEngine(_RunningEngine engine) async {
+    if (!engine.exited.isCompleted) {
+      if (_write('quit') < 0) {
+        _logger.severe(
+          'The engine could not be asked to quit and will never report an '
+          'exit. Giving up on a clean shutdown. $diagnostics',
+        );
+      } else {
+        try {
+          await engine.exited.future.timeout(kQuitTimeout);
+        } on TimeoutException {
+          _logger.severe(
+            'The engine did not exit in time (${kQuitTimeout.inSeconds}s). '
+            '$diagnostics It is abandoned: nothing it sends from now on is '
+            'delivered, but until this process is restarted a new engine may be '
+            'refused by the native library, because lc0 keeps its state in '
+            'process globals the stuck one still owns.',
+          );
+        }
       }
     }
 
-    _state.addListener(onStateChange);
-    if (_state.value == Lc0State.ready) {
-      stdin = 'quit';
-    }
-    return completer.future;
+    if (identical(_engine, engine)) _engine = null;
+    engine.dispose();
+  }
+
+  /// Ends this engine's session: slot returned, ports closed, state published.
+  void _release(Lc0State finalState, {required bool closeStdout}) {
+    _releaseSlot();
+    _engine?.dispose();
+    _engine = null;
+    _state._setValue(finalState);
+    if (closeStdout && !_stdoutController.isClosed) _stdoutController.close();
   }
 
   void _onEngineExit(int exitCode) {
-    _state._setValue(exitCode == 0 ? Lc0State.initial : Lc0State.error);
+    if (exitCode == 0) {
+      _logger.fine('The engine exited cleanly.');
+    } else {
+      _logger.severe(
+        'The engine exited with code $exitCode: '
+        '${describeMainExitCode(exitCode)}. $diagnostics',
+      );
+    }
+
+    // When dispose() asked for the exit, it publishes the final state itself.
+    if (_disposing) return;
+
+    // The handle is finished either way, but only a bad exit is a failure: an
+    // engine told `quit` over [stdin] exits cleanly and nothing went wrong.
+    //
+    // The slot is free whatever the code, because the engine is provably gone —
+    // that is exactly what the native library's re-entry guard keys off.
+    // Holding it until dispose() would only make the caller ask permission to
+    // replace an engine that no longer exists.
+    _release(
+      exitCode == 0 ? Lc0State.disposed : Lc0State.error,
+      closeStdout: true,
+    );
+  }
+}
+
+/// The ports of a single engine, and its lifetime.
+///
+/// Each engine gets its own ports so that closing them is enough to make an
+/// abandoned engine invisible to the [Lc0] handle that started it.
+class _RunningEngine {
+  _RunningEngine({
+    required void Function(int exitCode) onExit,
+    required void Function(String line) onStdout,
+  }) {
+    mainPort.listen((message) {
+      _logger.fine('The main isolate sent $message');
+      _exitCode = message is int ? message : 1;
+      dispose();
+      onExit(_exitCode!);
+    });
+
+    stdoutPort.listen((message) {
+      if (message is String) {
+        _logger.finest('[stdout] $message');
+        onStdout(message);
+      } else {
+        _logger.fine('The stdout isolate sent $message');
+      }
+    });
+  }
+
+  final mainPort = ReceivePort('Lc0 main isolate port');
+  final stdoutPort = ReceivePort('Lc0 stdout isolate port');
+
+  /// Completes when the engine has exited, with its exit code, or with null when
+  /// it was disposed without reporting one.
+  final exited = Completer<int?>();
+
+  int? _exitCode;
+  bool _disposed = false;
+
+  /// Stops listening to this engine's isolates.
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    mainPort.close();
+    stdoutPort.close();
+    if (!exited.isCompleted) exited.complete(_exitCode);
   }
 }
 
@@ -174,6 +432,7 @@ class _Lc0State extends ChangeNotifier implements ValueListenable<Lc0State> {
   @override
   Lc0State get value => _value;
 
+  // ignore: use_setters_to_change_properties
   _setValue(Lc0State v) {
     if (v == _value) return;
     _value = v;
@@ -181,24 +440,36 @@ class _Lc0State extends ChangeNotifier implements ValueListenable<Lc0State> {
   }
 }
 
+Lc0Bindings? _cachedBindings;
+
+Lc0Bindings _resolveBindings() {
+  final override = Zone.current[lc0BindingsKey];
+  if (override != null) return override as Lc0Bindings;
+  return _cachedBindings ??= Lc0BindingsFFI();
+}
+
 void _isolateMain(SendPort mainPort) {
-  final exitCode = nativeMain();
+  final exitCode = _resolveBindings().main();
   mainPort.send(exitCode);
-  _logger.fine('nativeMain returns $exitCode');
+
+  // Logging from a spawned isolate does not reach the root logger's listeners,
+  // so the exit code is reported by _onEngineExit on the main isolate instead.
+  _logger.fine('lc0_main returns $exitCode');
 }
 
 void _isolateStdout(SendPort stdoutPort) {
+  final bindings = _resolveBindings();
   String previous = '';
 
   while (true) {
-    final pointer = nativeStdoutRead();
+    final stdout = bindings.stdoutRead();
 
-    if (pointer.address == 0) {
-      _logger.fine('nativeStdoutRead returns NULL');
+    if (stdout == null) {
+      _logger.fine('lc0_stdout_read returns NULL');
       return;
     }
 
-    final data = previous + pointer.toDartString();
+    final data = previous + stdout;
     final lines = data.split('\n');
     previous = lines.removeLast();
     for (final line in lines) {
@@ -216,9 +487,27 @@ Future<bool> _spawnIsolates(SendPort mainPort, SendPort stdoutPort) async {
     );
   }
 
+  final bindings = _resolveBindings();
+
+  final initResult = bindings.init();
+  if (initResult != 0) {
+    _logger.severe(
+      'Failed to initialize the engine (init returned $initResult): '
+      '${describeInitCode(initResult)}. '
+      'phase=${Lc0Phase.fromCode(bindings.phase()).name} '
+      'step=${bindings.phaseStep()} '
+      'for ${bindings.phaseElapsedMs()}ms'
+      '${bindings.lastError() == null ? '' : '; native error: ${bindings.lastError()}'}',
+    );
+    return false;
+  }
+
   try {
-    await Isolate.spawn(_isolateStdout, stdoutPort,
-        debugName: 'Lc0 stdout isolate');
+    await Isolate.spawn(
+      _isolateStdout,
+      stdoutPort,
+      debugName: 'Lc0 stdout isolate',
+    );
   } catch (error) {
     _logger.severe('Failed to spawn stdout isolate: $error');
     return false;

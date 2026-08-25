@@ -31,6 +31,80 @@ index 59bc0c3..ea1a280 100644
  
  #include "utils/exception.h"
  
+diff --git a/src/chess/uciloop.cc b/src/chess/uciloop.cc
+index 4a11f8c..862abe7 100644
+--- a/src/chess/uciloop.cc
++++ b/src/chess/uciloop.cc
+@@ -37,6 +37,7 @@
+ #include <unordered_set>
+ #include <utility>
+ 
++#include "lc0io.h"
+ #include "utils/exception.h"
+ #include "utils/logging.h"
+ #include "utils/string.h"
+@@ -331,7 +332,7 @@ void StdoutUciResponder::SendRawResponses(
+   std::lock_guard<std::mutex> lock(output_mutex);
+   for (auto& response : responses) {
+     LOGFILE << "<< " << response;
+-    std::cout << response << std::endl;
++    lc0io::out() << response << std::endl;
+   }
+ }
+ 
+diff --git a/src/default_backend.h b/src/default_backend.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/default_search.h b/src/default_search.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/engine_loop.cc b/src/engine_loop.cc
+index f919cd2..4c11d28 100644
+--- a/src/engine_loop.cc
++++ b/src/engine_loop.cc
+@@ -30,6 +30,8 @@
+ #include <iostream>
+ 
+ #include "engine.h"
++#include "ffi.h"
++#include "lc0io.h"
+ #include "neural/shared_params.h"
+ #include "utils/configfile.h"
+ 
+@@ -63,13 +65,19 @@ void RunEngine(SearchFactory* factory) {
+   Logging::Get().SetFilename(options.Get<std::string>(kLogFileId));
+ 
+   // Create engine.
++  lc0_set_phase(LC0_PHASE_ENGINE_BOOTING, "engine_construct");
+   Engine engine(*factory, options);
+   UciLoop loop(&uci_responder, &options_parser, &engine);
+ 
+-  // Run the stdin loop.
+-  std::cout.setf(std::ios::unitbuf);
++  // Run the input loop.
++  //
++  // The stream comes from the plugin rather than being std::cin: two engines
++  // resident in one process cannot both own the process's descriptors. It is
++  // already unbuffered on the way out -- lc0io::out() flushes each line into the
++  // pipe -- so the unitbuf that used to be set on std::cout here is gone with it.
++  lc0_set_phase(LC0_PHASE_UCI_LOOP, "uci_loop");
+   std::string line;
+-  while (std::getline(std::cin, line)) {
++  while (std::getline(lc0io::in(), line)) {
+     LOGFILE << ">> " << line;
+     try {
+       if (!loop.ProcessLine(line)) break;
+@@ -79,6 +87,10 @@ void RunEngine(SearchFactory* factory) {
+       uci_responder.SendRawResponse(std::string("error ") + ex.what());
+     }
+   }
++
++  // Everything past this point is the teardown that can hang: the engine's
++  // destructor stops the search and joins its threads.
++  lc0_set_phase(LC0_PHASE_SHUTTING_DOWN, "engine_teardown");
+ }
+ 
+ }  // namespace lczero
 diff --git a/src/main.cc b/src/main.cc
 index f6d90c0..625e956 100644
 --- a/src/main.cc
@@ -92,9 +166,25 @@ index f6d90c0..625e956 100644
      } else {
        lczero::ChooseAndRunEngine();
      }
-diff --git a/src/default_backend.h b/src/default_backend.h
-new file mode 100644
-index 0000000..e69de29
-diff --git a/src/default_search.h b/src/default_search.h
-new file mode 100644
-index 0000000..e69de29
+diff --git a/src/utils/logging.cc b/src/utils/logging.cc
+index b4d4aa1..60a003a 100644
+--- a/src/utils/logging.cc
++++ b/src/utils/logging.cc
+@@ -31,6 +31,8 @@
+ #include <iostream>
+ #include <thread>
+ 
++#include "lc0io.h"
++
+ namespace lczero {
+ 
+ namespace {
+@@ -89,7 +91,7 @@ StdoutLogMessage::StdoutLogMessage(const char* file, int line)
+     : log_(file, line) {}
+ 
+ StdoutLogMessage::~StdoutLogMessage() {
+-  std::cout << str() << std::endl;
++  lc0io::out() << str() << std::endl;
+   log_ << str();
+ }
+ 

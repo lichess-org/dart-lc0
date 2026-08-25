@@ -5,6 +5,7 @@ add_library(
   lc0
   SHARED
   ../ios/src/ffi.cpp
+  ../ios/src/lc0io.cpp
   ../ios/lc0/src/main.cc
   ../ios/lc0/src/engine.cc
   ../ios/lc0/src/engine_loop.cc

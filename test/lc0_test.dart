@@ -3,356 +3,401 @@ import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lc0/lc0.dart';
+import 'package:lc0/src/bindings.dart';
+// The zone keys are test-only seams, so they live beside the implementation
+// rather than in the public entrypoint.
+// ignore: unnecessary_import
+import 'package:lc0/src/lc0.dart' show lc0BindingsKey, lc0SpawnIsolatesKey;
 
-/// Mock controller for simulating engine behavior in tests.
-class MockEngineController {
+/// A stand-in for the native library.
+class MockLc0Bindings implements Lc0Bindings {
   final List<String> stdinCalls = [];
 
-  /// Set to true to make the next [spawnIsolates] call fail.
+  int initReturnValue = 0;
+  int mainReturnValue = 0;
+  void Function(String input)? onStdin;
+
+  /// The value [stdinWrite] reports. Negative values simulate a native write
+  /// failure, e.g. an input pipe that stayed full.
+  int stdinWriteReturnValue = 0;
+
+  /// The phase, step and error the mocked native library reports.
+  int phaseReturnValue = Lc0Phase.uciLoop.code;
+  String phaseStepReturnValue = 'uci_loop';
+  int phaseElapsedMsReturnValue = 0;
+  String? lastErrorReturnValue;
+
+  @override
+  int init() => initReturnValue;
+
+  @override
+  int main() => mainReturnValue;
+
+  @override
+  int stdinWrite(String input) {
+    stdinCalls.add(input);
+    onStdin?.call(input);
+    return stdinWriteReturnValue;
+  }
+
+  @override
+  String? stdoutRead() => null;
+
+  @override
+  int phase() => phaseReturnValue;
+
+  @override
+  String phaseStep() => phaseStepReturnValue;
+
+  @override
+  int phaseElapsedMs() => phaseElapsedMsReturnValue;
+
+  @override
+  String? lastError() => lastErrorReturnValue;
+}
+
+/// A single simulated engine, holding the ports it was spawned with.
+class MockEngine {
+  MockEngine(this._mainPort, this._stdoutPort);
+
+  final SendPort _mainPort;
+  final SendPort _stdoutPort;
+
+  bool _exited = false;
+
+  /// Whether this engine is still running.
+  bool get isAlive => !_exited;
+
+  /// Simulates the engine writing a line.
+  void emitStdout(String line) => _stdoutPort.send(line);
+
+  /// Answers the handshake, as a healthy engine does.
+  void answerHandshake() {
+    emitStdout('id name Lc0 v0.32.1');
+    emitStdout('uciok');
+  }
+
+  /// Simulates the engine exiting. Exiting twice is a no-op, as it is for a
+  /// real process.
+  void exit(int code) {
+    if (_exited) return;
+    _exited = true;
+    _mainPort.send(code);
+  }
+}
+
+/// Drives the engine from the test.
+class MockEngineController {
+  final bindings = MockLc0Bindings();
+
+  /// Every engine spawned so far, in spawn order.
+  final List<MockEngine> engines = [];
+
+  /// Set to true to make the next spawn fail.
   bool failNextSpawn = false;
 
-  SendPort? _mainPort;
-  SendPort? _stdoutPort;
+  /// Whether an engine should answer `uci` with `uciok` by itself. Turned off
+  /// by tests that want to watch a start hang.
+  bool autoHandshake = true;
 
-  /// Simulates the engine outputting a line to stdout.
-  void emitStdout(String line) {
-    _stdoutPort?.send(line);
+  MockEngine get engine => engines.last;
+
+  MockEngineController() {
+    bindings.onStdin = (input) {
+      if (!autoHandshake || engines.isEmpty) return;
+      if (input.trim() == 'uci') engines.last.answerHandshake();
+      if (input.trim() == 'quit') engines.last.exit(0);
+    };
   }
 
-  /// Simulates the engine exiting with the given exit code.
-  void exit(int code) {
-    _mainPort?.send(code);
-  }
-
-  /// The spawn isolates override for zone injection.
-  ///
-  /// Always captures [mainPort] so that [exit] can reset engine state
-  /// even when spawn fails.
   Future<bool> spawnIsolates(SendPort mainPort, SendPort stdoutPort) async {
-    _mainPort = mainPort;
-    _stdoutPort = stdoutPort;
     if (failNextSpawn) {
       failNextSpawn = false;
       return false;
     }
+    if (bindings.init() != 0) return false;
+    engines.add(MockEngine(mainPort, stdoutPort));
     return true;
-  }
-
-  /// The stdin write override for zone injection.
-  void stdinWrite(String data) {
-    stdinCalls.add(data);
   }
 }
 
-/// Runs [body] with mocked engine internals.
+/// Runs [body] with the native library and the isolates mocked out.
 ///
-/// Injects [controller] for isolate spawning and stdin writes.
-/// Always resets the engine to [Lc0State.initial] on exit.
+/// The cleanup happens inside the zone too: the slot is process-wide, so an
+/// engine left behind leaks into the next test — and disposing it outside the
+/// zone would reach for the real native library.
 Future<T> runWithMockLc0<T>(
   MockEngineController controller,
-  FutureOr<T> Function() body,
+  Future<T> Function() body,
 ) {
   return runZoned(
     () async {
       try {
         return await body();
       } finally {
-        controller.exit(0);
-        await Future.delayed(Duration.zero);
+        // Exiting the engines first keeps the cleanup from waiting out a quit
+        // timeout.
+        for (final engine in controller.engines) {
+          engine.exit(0);
+        }
+        await Future<void>.delayed(Duration.zero);
+        await Lc0.debugLiveEngine?.dispose();
       }
     },
     zoneValues: {
+      lc0BindingsKey: controller.bindings,
       lc0SpawnIsolatesKey: controller.spawnIsolates,
-      lc0StdinWriteKey: controller.stdinWrite,
     },
   );
 }
 
 void main() {
-  group('Lc0.instance', () {
-    test('is a singleton', () {
-      expect(Lc0.instance, same(Lc0.instance));
+  group('Lc0.create', () {
+    test('returns an engine that has answered its handshake', () async {
+      final controller = MockEngineController();
+
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+
+        expect(engine.state.value, Lc0State.ready);
+        expect(controller.bindings.stdinCalls, contains('uci\n'));
+      });
     });
 
-    test('starts in initial state', () async {
+    test('refuses a second engine while the first is live', () async {
       final controller = MockEngineController();
-      await runWithMockLc0(controller, () {
-        expect(Lc0.instance.state.value, Lc0State.initial);
+
+      await runWithMockLc0(controller, () async {
+        await Lc0.create();
+
+        await expectLater(Lc0.create(), throwsA(isA<StateError>()));
+      });
+    });
+
+    test('refuses a second engine while the first is still starting', () async {
+      final controller = MockEngineController()..autoHandshake = false;
+
+      await runWithMockLc0(controller, () async {
+        final starting = Lc0.create();
+        await expectLater(Lc0.create(), throwsA(isA<StateError>()));
+
+        // Let the first one finish, so the test does not leave it hanging.
+        await pumpEventQueue();
+        controller.engine.answerHandshake();
+        await starting;
+      });
+    });
+
+    test('throws and frees the slot when the native init fails', () async {
+      final controller = MockEngineController();
+      controller.bindings.initReturnValue = -1;
+
+      await runWithMockLc0(controller, () async {
+        await expectLater(Lc0.create(), throwsA(isA<Exception>()));
+        expect(Lc0.debugLiveEngine, isNull);
+      });
+    });
+
+    test(
+        'reports an engine that exits while starting, without waiting out '
+        'the timeout', () async {
+      final controller = MockEngineController()..autoHandshake = false;
+
+      await runWithMockLc0(controller, () async {
+        final starting = Lc0.create();
+        await pumpEventQueue();
+
+        controller.engine.exit(1);
+
+        await expectLater(starting, throwsA(isA<Exception>()));
+        expect(Lc0.debugLiveEngine, isNull);
+      });
+    });
+
+    test('the engine is asked for the handshake it is waited on', () async {
+      // lc0 says nothing until it is spoken to -- its banner goes to the log,
+      // not to the UCI channel -- so `uci` is both the first command and the
+      // thing that proves the engine is up.
+      final controller = MockEngineController();
+
+      await runWithMockLc0(controller, () async {
+        await Lc0.create();
+
+        expect(controller.bindings.stdinCalls.first, 'uci\n');
+      });
+    });
+
+    test('start-up output reaches onStdout, which stdout would have missed',
+        () async {
+      final controller = MockEngineController();
+      final lines = <String>[];
+
+      await runWithMockLc0(controller, () async {
+        await Lc0.create(onStdout: lines.add);
+
+        expect(lines, contains('id name Lc0 v0.32.1'));
+        expect(lines, contains('uciok'));
       });
     });
   });
 
-  group('Lc0.start', () {
-    test('transitions through starting to ready on success', () async {
+  group('Lc0.dispose', () {
+    test('quits the engine, waits for it and frees the slot', () async {
       final controller = MockEngineController();
+
       await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        final startFuture = lc0.start();
+        final engine = await Lc0.create();
 
-        expect(lc0.state.value, Lc0State.starting);
+        await engine.dispose();
 
-        await startFuture;
-        expect(lc0.state.value, Lc0State.ready);
+        expect(controller.bindings.stdinCalls, contains('quit\n'));
+        expect(controller.engine.isAlive, isFalse);
+        expect(engine.state.value, Lc0State.disposed);
+        expect(Lc0.debugLiveEngine, isNull);
       });
     });
 
-    test('throws StateError when already running', () async {
+    test('closes the stdout stream and refuses further commands', () async {
       final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        await lc0.start();
 
-        expect(() => lc0.start(), throwsStateError);
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+        final done = expectLater(engine.stdout, emitsDone);
+
+        await engine.dispose();
+
+        await done;
+        expect(() => engine.stdin = 'go', throwsA(isA<StateError>()));
       });
     });
 
-    test('returns same Future when start is already in progress', () async {
+    test('concurrent calls share the first one', () async {
       final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-
-        final startFuture1 = lc0.start();
-        expect(lc0.state.value, Lc0State.starting);
-
-        final startFuture2 = lc0.start();
-        expect(startFuture2, same(startFuture1));
-
-        await Future.wait([startFuture1, startFuture2]);
-        expect(lc0.state.value, Lc0State.ready);
-      });
-    });
-
-    test('throws and sets error state when spawn fails', () async {
-      final controller = MockEngineController();
-      controller.failNextSpawn = true;
 
       await runWithMockLc0(controller, () async {
-        await expectLater(Lc0.instance.start(), throwsException);
-        expect(Lc0.instance.state.value, Lc0State.error);
-      });
-    });
+        final engine = await Lc0.create();
 
-    test('can restart after error', () async {
-      final controller = MockEngineController();
-      controller.failNextSpawn = true;
-
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-
-        await expectLater(lc0.start(), throwsException);
-        expect(lc0.state.value, Lc0State.error);
-
-        await lc0.start();
-        expect(lc0.state.value, Lc0State.ready);
-      });
-    });
-
-    test('can restart after quit', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-
-        await lc0.start();
-        expect(lc0.state.value, Lc0State.ready);
-
-        final quitFuture = lc0.quit();
-        controller.exit(0);
-        await quitFuture;
-        expect(lc0.state.value, Lc0State.initial);
-
-        await lc0.start();
-        expect(lc0.state.value, Lc0State.ready);
-      });
-    });
-  });
-
-  group('Lc0.quit', () {
-    test('completes immediately when already in initial state', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        expect(lc0.state.value, Lc0State.initial);
-
-        await lc0.quit();
-        expect(lc0.state.value, Lc0State.initial);
-      });
-    });
-
-    test('sends quit command and transitions to initial state', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        await lc0.start();
-
-        final quitFuture = lc0.quit();
-        controller.exit(0);
-        await quitFuture;
-
-        expect(controller.stdinCalls, contains('quit\n'));
-        expect(lc0.state.value, Lc0State.initial);
-      });
-    });
-
-    test('waits for ready state before sending quit when starting', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        lc0.start(); // don't await — engine is starting
-
-        expect(lc0.state.value, Lc0State.starting);
-
-        final quitFuture = lc0.quit();
-
-        // quit not yet sent while still starting
-        expect(controller.stdinCalls, isNot(contains('quit\n')));
-
-        // let start() complete: state → ready → onStateChange sends quit
-        await Future.delayed(Duration.zero);
-        expect(controller.stdinCalls, contains('quit\n'));
-
-        controller.exit(0);
-        await quitFuture;
-        expect(lc0.state.value, Lc0State.initial);
-      });
-    });
-
-    test('returns same Future when quit is already in progress', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        await lc0.start();
-
-        final quitFuture1 = lc0.quit();
-        final quitFuture2 = lc0.quit();
-        final quitFuture3 = lc0.quit();
-
-        expect(quitFuture2, same(quitFuture1));
-        expect(quitFuture3, same(quitFuture1));
+        await Future.wait([engine.dispose(), engine.dispose()]);
 
         expect(
-          controller.stdinCalls.where((c) => c == 'quit\n').length,
-          equals(1),
+          controller.bindings.stdinCalls.where((c) => c == 'quit\n').length,
+          1,
         );
+      });
+    });
 
-        controller.exit(0);
-        await Future.wait([quitFuture1, quitFuture2, quitFuture3]);
-        expect(lc0.state.value, Lc0State.initial);
+    test('completes on an engine that has already died', () async {
+      final controller = MockEngineController();
+
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+        controller.engine.exit(0);
+        await pumpEventQueue();
+
+        await engine.dispose();
+        expect(engine.state.value, Lc0State.disposed);
       });
     });
   });
 
   group('Lc0.stdin', () {
-    test('throws StateError when engine is not ready', () async {
+    test('logs a failed write instead of throwing', () async {
       final controller = MockEngineController();
-      await runWithMockLc0(controller, () {
-        expect(() => Lc0.instance.stdin = 'isready', throwsStateError);
+      controller.bindings.stdinWriteReturnValue = Lc0WriteResult.pipeFull;
+
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+
+        expect(() => engine.stdin = 'go', returnsNormally);
+        // A full pipe delivered nothing, but the command stream is still
+        // coherent, so the session survives.
+        expect(engine.state.value, Lc0State.ready);
       });
     });
 
-    test('writes command with newline to engine when ready', () async {
+    test('a partial write fails the engine so later commands throw', () async {
       final controller = MockEngineController();
+
       await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        await lc0.start();
+        final engine = await Lc0.create();
 
-        lc0.stdin = 'isready';
-        lc0.stdin = 'go movetime 1000';
+        controller.bindings.stdinWriteReturnValue = Lc0WriteResult.partial;
+        engine.stdin = 'go';
 
-        expect(controller.stdinCalls, contains('isready\n'));
-        expect(controller.stdinCalls, contains('go movetime 1000\n'));
-      });
-    });
-  });
-
-  group('Lc0.stdout', () {
-    test('emits lines from engine', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        final lines = <String>[];
-        lc0.stdout.listen(lines.add);
-
-        await lc0.start();
-
-        controller.emitStdout('id name Lc0');
-        controller.emitStdout('uciok');
-        await Future.delayed(Duration.zero);
-
-        expect(lines, containsAll(['id name Lc0', 'uciok']));
-      });
-    });
-
-    test('stream persists across restarts', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        final lines = <String>[];
-        lc0.stdout.listen(lines.add);
-
-        await lc0.start();
-        controller.emitStdout('session 1');
-
-        final quitFuture = lc0.quit();
-        controller.exit(0);
-        await quitFuture;
-
-        await lc0.start();
-        controller.emitStdout('session 2');
-        await Future.delayed(Duration.zero);
-
-        expect(lines, containsAll(['session 1', 'session 2']));
+        expect(engine.state.value, Lc0State.error);
+        expect(() => engine.stdin = 'stop', throwsA(isA<StateError>()));
       });
     });
   });
 
   group('Lc0.state', () {
-    test('notifies listeners on state changes', () async {
+    test('a crash is an error the handle does not recover from', () async {
       final controller = MockEngineController();
+
       await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        final states = <Lc0State>[];
-        lc0.state.addListener(() => states.add(lc0.state.value));
+        final engine = await Lc0.create();
 
-        await lc0.start();
+        controller.engine.exit(139);
+        await pumpEventQueue();
 
-        final quitFuture = lc0.quit();
-        controller.exit(0);
-        await quitFuture;
+        expect(engine.state.value, Lc0State.error);
+        expect(Lc0.debugLiveEngine, isNull, reason: 'the slot is free again');
 
-        expect(states, [
-          Lc0State.starting,
-          Lc0State.ready,
-          Lc0State.initial,
-        ]);
+        // Disposing a handle that already failed keeps the failure: that is the
+        // fact worth reporting, not the disposal.
+        await engine.dispose();
+        expect(engine.state.value, Lc0State.error);
+      });
+    });
+  });
+
+  group('Lc0.diagnostics', () {
+    test('reports what the native library says', () async {
+      final controller = MockEngineController();
+      controller.bindings
+        ..phaseReturnValue = Lc0Phase.engineBooting.code
+        ..phaseStepReturnValue = 'engine_construct'
+        ..phaseElapsedMsReturnValue = 1200
+        ..lastErrorReturnValue = 'could not read the network';
+
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+
+        final diagnostics = engine.diagnostics;
+        expect(diagnostics.phase, Lc0Phase.engineBooting);
+        expect(diagnostics.step, 'engine_construct');
+        expect(diagnostics.elapsed, const Duration(milliseconds: 1200));
+        expect(diagnostics.lastError, 'could not read the network');
+        expect(diagnostics.looksStuck, isFalse, reason: 'booting takes time');
       });
     });
 
-    test('transitions to error state on engine crash', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        await lc0.start();
+    test('a boot is only stuck once it has taken far too long', () async {
+      // Loading a network is real work, unlike the other transitions, so it is
+      // given much longer before it is called a wedge.
+      const booting = Lc0Diagnostics(
+        phase: Lc0Phase.engineBooting,
+        step: 'engine_construct',
+        elapsed: Duration(seconds: 20),
+        lastError: null,
+      );
+      expect(booting.looksStuck, isFalse);
 
-        controller.exit(1); // non-zero = crash
-        await Future.delayed(Duration.zero);
+      const wedged = Lc0Diagnostics(
+        phase: Lc0Phase.engineBooting,
+        step: 'engine_construct',
+        elapsed: Duration(seconds: 60),
+        lastError: null,
+      );
+      expect(wedged.looksStuck, isTrue);
 
-        expect(lc0.state.value, Lc0State.error);
-      });
-    });
-
-    test('can restart after engine crash', () async {
-      final controller = MockEngineController();
-      await runWithMockLc0(controller, () async {
-        final lc0 = Lc0.instance;
-        await lc0.start();
-
-        controller.exit(1);
-        await Future.delayed(Duration.zero);
-        expect(lc0.state.value, Lc0State.error);
-
-        await lc0.start();
-        expect(lc0.state.value, Lc0State.ready);
-      });
+      const teardown = Lc0Diagnostics(
+        phase: Lc0Phase.shuttingDown,
+        step: 'engine_teardown',
+        elapsed: Duration(seconds: 10),
+        lastError: null,
+      );
+      expect(teardown.looksStuck, isTrue);
     });
   });
 }

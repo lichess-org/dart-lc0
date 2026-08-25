@@ -23,8 +23,17 @@ bash fetchSources.sh
 ```
 
 ```bash
-# Run tests
+# Dart tests (the handle API, against a mocked native library)
 flutter test
+
+# Native shim test: private I/O, the re-entry guard, pipe reuse, diagnostics.
+# Builds in seconds -- the engine is replaced by a stub that reads and writes the
+# same streams lc0 does.
+test/run_shim_test.sh
+
+# The real engine, booted through the shim. Compiles lc0 itself, so it is the
+# only test that covers the patch to the engine's own sources.
+test/run_real_engine_test.sh
 ```
 
 ## Architecture
@@ -32,18 +41,25 @@ flutter test
 The project has three layers:
 
 ### 1. Dart/Flutter Layer (`lib/`)
-- `lib/src/lc0.dart` — Core `Lc0` class. Singleton (`Lc0.instance`). `start()` spawns two Dart isolates: one runs `nativeMain()` (blocks until engine exits), the other polls `nativeStdoutRead()` in a loop. `quit()` sends the UCI `quit` command and waits for the engine to exit. Exposes `stdin` setter (sends UCI commands), `stdout` getter (`Stream<String>`), and `state` (`ValueListenable<Lc0State>`).
-- `lib/src/ffi.dart` — FFI bindings. On Android, opens `liblc0.so`; on iOS, uses `DynamicLibrary.process()`.
-- `lib/src/lc0_state.dart` — Lifecycle enum: `initial`, `starting`, `ready`, `error`.
+- `lib/src/lc0.dart` — Core `Lc0` class. An engine is a **handle**: `Lc0.create()` starts one and completes once it has answered `uciok`, `dispose()` releases it, and the handle is single-use. At most one engine is live at a time (lc0 keeps its state in process globals), which `create()` enforces by throwing a `StateError`. It spawns two Dart isolates: one runs `lc0_main()` (blocks until the engine exits), the other polls `lc0_stdout_read()` in a loop. Exposes `stdin` setter, `stdout` getter (`Stream<String>`), `state` (`ValueListenable<Lc0State>`) and `diagnostics`.
+- `lib/src/bindings.dart` — `Lc0Bindings`, an interface over the native symbols, plus its FFI implementation. On Android it opens `liblc0.so`; elsewhere it uses `DynamicLibrary.process()`, which reaches symbols whether the plugin was linked as a framework or merged into the app binary. Tests put a fake behind the interface via the `lc0BindingsKey` zone value.
+- `lib/src/lc0_state.dart` — Lifecycle enum: `initial`, `starting`, `ready`, `error`, `disposed`.
+- `lib/src/lc0_diagnostics.dart` — `Lc0Phase` / `Lc0Diagnostics`, mirroring the `LC0_PHASE_*` codes the native shim publishes, and the `describe*Code` helpers for its return values. Deliberately the same shape as dart-multistockfish's, so an app hosting both reports their failures the same way.
 
-### 2. C++ Bridge Layer (`ios/src/ffi.cpp`)
-Implements the three functions exported to Dart FFI:
-- `lc0_main()` — Sets up stdin/stdout pipes via `dup2`, then calls `main()`. Sends `"quitok"` sentinel when done.
-- `lc0_stdin_write(char*)` — Writes a UCI command to the engine's stdin pipe.
-- `lc0_stdout_read()` — Reads a line from the engine's stdout pipe; returns `NULL` on `"quitok"` or error.
+### 2. C++ Bridge Layer (`ios/src/`)
+- `ffi.cpp` / `ffi.h` — the shim. `lc0_init()` creates the pipes once and drains them on a restart; `lc0_main()` binds the engine's streams to them and runs it, refusing to run twice over the same process globals; `lc0_stdin_write()` never blocks (the write side is non-blocking, and a pipe that stays full is reported rather than waited on); `lc0_stdout_read()` blocks until there is output and returns `NULL` when the engine is gone. `lc0_phase()`, `lc0_phase_step()`, `lc0_phase_elapsed_ms()` and `lc0_last_error()` publish where the engine got to, which is the only way to see a wedge from Dart.
+- `lc0io.cpp` / `lc0io.h` — **private engine I/O**. Two streams that replace `std::cin` and `std::cout` inside the engine, bound straight to the shim's pipe. This replaces a `dup2` onto the process's fd 0 and fd 1, which meant no other engine could be resident beside lc0 and the host app lost its own stdout while it ran. Ported from dart-multistockfish's `sfio.{h,cpp}`; keep the two in step.
 
 ### 3. Lc0 Engine Layer (`ios/lc0/`, `android/lc0/`)
-Lc0 v0.32.1 source, patched via `lc0.patch` to remove `selfplay`, `leela2onnx`, `onnx2leela`, and `describenet` modes—only `uci` and `benchmark` are kept. Eigen 3.4.0 is used for linear algebra.
+Lc0 v0.32.1 source, patched via `lc0.patch`. The patch does two things: it removes the `selfplay`, `leela2onnx`, `onnx2leela` and `describenet` modes (only `uci` and `benchmark` are kept), and it points the engine's UCI channel at `lc0io::in()` / `lc0io::out()` instead of `std::cin` / `std::cout` — three sites, in `engine_loop.cc`, `chess/uciloop.cc` and `utils/logging.cc` — plus the two `lc0_set_phase()` calls that let the shim say whether a start is still booting or already in the loop. Eigen 3.4.0 is used for linear algebra.
+
+**`ios/lc0/` is not tracked**: `fetchSources.sh` clones it and applies `lc0.patch`. To change the engine, edit the working tree and regenerate the patch:
+
+```bash
+cd ios/lc0
+git add -N src/default_backend.h src/default_search.h
+git diff > ../../lc0.patch
+```
 
 ## Native Build Details
 
@@ -59,24 +75,24 @@ Lc0 v0.32.1 source, patched via `lc0.patch` to remove `selfplay`, `leela2onnx`, 
 
 ## Key Usage Pattern
 
-`Lc0` is a singleton — always access it via `Lc0.instance`. The engine is not started automatically; call `start()` explicitly and `quit()` to stop it (it can be restarted after quitting).
+An engine is a handle rather than a singleton: `Lc0.create()` starts one and completes once it is ready, `dispose()` releases it, and a handle is never restarted.
 
 ```dart
-// Start engine (returns Future that completes when ready)
-await Lc0.instance.start();
+// Start the engine. Completes when it has answered `uciok`.
+final engine = await Lc0.create();
 
 // Listen to engine output
-Lc0.instance.stdout.listen((line) => print(line));
+engine.stdout.listen((line) => print(line));
 
-// Load weights (required before analysis)
-Lc0.instance.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
+// Load neural network weights (required before analysis)
+engine.stdin = 'setoption name WeightsFile value /path/to/weights.pb.gz';
 
-// Send UCI commands
-Lc0.instance.stdin = 'position startpos moves e2e4';
-Lc0.instance.stdin = 'go movetime 3000';
+// Analyze a position
+engine.stdin = 'position startpos moves e2e4';
+engine.stdin = 'go movetime 3000';
 
-// Stop engine (returns Future; engine can be restarted with start())
-await Lc0.instance.quit();
+// Release it
+await engine.dispose();
 ```
 
 The example app (`example/`) bundles `maia1500.pb.gz` weights in assets and copies them to the app's documents directory on first launch before loading.
