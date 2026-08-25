@@ -96,6 +96,7 @@ int lc0_driver()
 
 int main(int argc, char **argv)
 {
+  if (argc < 2) { fprintf(stderr, "usage: real_engine_test <library>\n"); return 1; }
   void *lib = dlopen(argv[1], RTLD_NOW);
   if (!lib) { fprintf(stderr, "dlopen failed: %s\n", dlerror()); return 1; }
   lc0_init = (int (*)())dlsym(lib, "lc0_init");

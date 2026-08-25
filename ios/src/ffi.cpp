@@ -23,7 +23,10 @@
 #define CHILD_READ_FD (pipes[PARENT_WRITE_PIPE][READ_FD])
 #define CHILD_WRITE_FD (pipes[PARENT_READ_PIPE][WRITE_FD])
 
-int main(int, char **);
+// The engine's entry point, renamed from main() by lc0.patch: calling main() is
+// not allowed in C++, and a global main() would collide with the host
+// application's own were this plugin ever statically linked into it.
+int lc0_engine_main(int argc, const char **argv);
 
 static const char *QUITOK = "quitok\n";
 static int pipes[NUM_PIPES][2] = {{-1, -1}, {-1, -1}};
@@ -262,13 +265,13 @@ int lc0_main()
   set_phase(LC0_PHASE_ENGINE_BOOTING, "engine_boot");
 
   int argc = 1;
-  char *argv[] = {(char *)""};
+  const char *argv[] = {""};
   int exitCode;
 
 #if defined(__cpp_exceptions)
   try
   {
-    exitCode = main(argc, argv);
+    exitCode = lc0_engine_main(argc, argv);
   }
   catch (const std::exception &e)
   {
@@ -287,7 +290,7 @@ int lc0_main()
     return LC0_MAIN_ENGINE_THREW;
   }
 #else
-  exitCode = main(argc, argv);
+  exitCode = lc0_engine_main(argc, argv);
 #endif
 
   set_phase(exitCode == 0 ? LC0_PHASE_EXITED : LC0_PHASE_FAILED, "exited");

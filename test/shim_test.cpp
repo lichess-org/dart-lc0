@@ -160,15 +160,7 @@ static int run_test()
   return g_failures == 0 ? 0 : 1;
 }
 
-// Both the process and the shim enter through main(): the shim runs the engine
-// by calling it, which is how it runs lc0's own main() in production. The first
-// call is the process's, and it is the one that drives the test; every call
-// after it comes from the shim and is an engine.
-int main(int, char **)
-{
-  static std::atomic<bool> driving{false};
-  bool expected = false;
-  if (driving.compare_exchange_strong(expected, true))
-    return run_test();
-  return run_stub_engine();
-}
+// The engine the shim runs, standing in for lc0's own entry point.
+int lc0_engine_main(int, const char **) { return run_stub_engine(); }
+
+int main(int, char **) { return run_test(); }
