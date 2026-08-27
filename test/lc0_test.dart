@@ -79,11 +79,28 @@ class MockEngine {
 
   /// Simulates the engine exiting. Exiting twice is a no-op, as it is for a
   /// real process.
+  ///
+  /// The reader stops too: a real engine writes the quit marker on its way out,
+  /// and the isolate reading its pipe returns as soon as it sees it. The handle
+  /// waits for both, so a mock that reported only the exit would leave every
+  /// teardown sitting on the reader timeout.
   void exit(int code) {
     if (_exited) return;
     _exited = true;
     _mainPort.send(code);
+    _stdoutPort.send(null);
   }
+
+  /// Simulates an engine that exits without its reader ever letting go — one
+  /// wedged somewhere that never writes the quit marker.
+  void exitWithoutStoppingReader(int code) {
+    if (_exited) return;
+    _exited = true;
+    _mainPort.send(code);
+  }
+
+  /// Simulates the reader isolate seeing the quit marker and returning.
+  void stopReader() => _stdoutPort.send(null);
 }
 
 /// Drives the engine from the test.
@@ -100,13 +117,24 @@ class MockEngineController {
   /// by tests that want to watch a start hang.
   bool autoHandshake = true;
 
+  /// Whether an engine's exit also stops its reader, as a real one's does by
+  /// writing the quit marker. Turned off by tests that want to drive the two
+  /// apart.
+  bool readerStopsOnExit = true;
+
   MockEngine get engine => engines.last;
 
   MockEngineController() {
     bindings.onStdin = (input) {
       if (!autoHandshake || engines.isEmpty) return;
       if (input.trim() == 'uci') engines.last.answerHandshake();
-      if (input.trim() == 'quit') engines.last.exit(0);
+      if (input.trim() == 'quit') {
+        if (readerStopsOnExit) {
+          engines.last.exit(0);
+        } else {
+          engines.last.exitWithoutStoppingReader(0);
+        }
+      }
     };
   }
 
@@ -283,6 +311,67 @@ void main() {
           controller.bindings.stdinCalls.where((c) => c == 'quit\n').length,
           1,
         );
+      });
+    });
+
+    test('waits for the reader to let go of the pipe before it returns',
+        () async {
+      final controller = MockEngineController();
+
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+
+        // The engine exits on `quit` as usual, but its reader stays blocked on
+        // the pipe: it only learns of the exit from the quit marker, which it
+        // has not read yet.
+        controller.readerStopsOnExit = false;
+
+        var disposed = false;
+        unawaited(engine.dispose().then((_) => disposed = true));
+        await pumpEventQueue();
+
+        expect(
+          disposed,
+          isFalse,
+          reason:
+              'returning here would let the next create() drain the pipe out '
+              'from under a reader that has not stopped',
+        );
+
+        // The reader wakes, sees the marker and returns.
+        controller.engine.stopReader();
+        await pumpEventQueue();
+        expect(disposed, isTrue);
+      });
+    });
+
+    test('does not wait forever for a reader that never stops', () async {
+      final controller = MockEngineController();
+
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+
+        controller.readerStopsOnExit = false;
+
+        final elapsed = Stopwatch()..start();
+        final disposal = engine.dispose();
+
+        await disposal.timeout(
+          kReaderStopTimeout * 3,
+          onTimeout: () =>
+              fail('dispose() hung waiting for a reader that never stops'),
+        );
+        elapsed.stop();
+
+        expect(
+          elapsed.elapsed,
+          greaterThanOrEqualTo(
+            kReaderStopTimeout - const Duration(milliseconds: 100),
+          ),
+          reason: 'it should have given the reader its full window first',
+        );
+        expect(engine.state.value, Lc0State.disposed);
+        expect(Lc0.debugLiveEngine, isNull);
       });
     });
 

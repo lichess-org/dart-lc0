@@ -153,6 +153,37 @@ static int run_test()
   send("quit");
   second.join();
 
+  // The quit marker arrives glued to the output before it.
+  //
+  // A page-sized read usually picks the marker up in the same call as the output
+  // written before it, so recognising it has to be a suffix match rather than a
+  // whole-buffer one. A reader that misses it loops forever on an engine that
+  // has exited, and then takes the pipe from the engine that replaces it.
+  // Nothing reads this session until after the engine is gone, which is what
+  // puts the output and the marker in one read.
+  check(lc0_init() == 0, "init succeeds for the buffered session");
+  std::thread third([] { lc0_main(); });
+  send("uci");
+  send("quit");
+  third.join();
+  check(lc0_phase() == LC0_PHASE_EXITED, "the buffered session exited");
+
+  {
+    std::string collected;
+    while (true)
+    {
+      char *chunk = lc0_stdout_read();
+      if (chunk == NULL)
+        break;
+      collected += chunk;
+    }
+
+    check(collected.find("uciok") != std::string::npos,
+          "the output buffered before the marker is still delivered");
+    check(collected.find("quitok") == std::string::npos,
+          "and the marker itself is not delivered as output");
+  }
+
   // Nothing the engine said should have reached the host's stdout. The runner
   // discards stdout and keeps stderr, so a failure here shows up as engine
   // output appearing where the host's own writes go.

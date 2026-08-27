@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
@@ -10,6 +11,27 @@ final _logger = Logger('Lc0');
 ///
 /// An interface rather than a set of top-level functions so that tests can put
 /// a fake engine behind it without a native library.
+/// Decodes a NUL-terminated chunk of engine output.
+///
+/// Deliberately not `Utf8Pointer.toDartString()`, which is
+/// `utf8.decode(..., allowMalformed: false)` and therefore *throws* on a partial
+/// sequence. A chunk is a slice of a byte stream, so a multi-byte character can
+/// straddle two of them — and that throw would land in the reader isolate's loop,
+/// uncaught, killing the only thing draining the engine's pipe. The engine then
+/// blocks writing into a full pipe, stops reading commands, misses its quit, and
+/// keeps the native slot for the rest of the process's life.
+///
+/// A replacement character on one line of engine output is a far better outcome,
+/// and it makes the reader proof against malformed bytes from an engine that is
+/// already misbehaving, not only against split ones.
+String decodeEngineChunk(ffi.Pointer<ffi.Uint8> bytes) {
+  var length = 0;
+  while (bytes[length] != 0) {
+    length++;
+  }
+  return utf8.decode(bytes.asTypedList(length), allowMalformed: true);
+}
+
 abstract class Lc0Bindings {
   /// Creates the engine's pipes, or drains the ones a previous run left.
   ///
@@ -91,7 +113,7 @@ class Lc0BindingsFFI implements Lc0Bindings {
       _logger.fine('lc0_stdout_read returns NULL');
       return null;
     }
-    return pointer.toDartString();
+    return decodeEngineChunk(pointer.cast<ffi.Uint8>());
   }
 
   @override
