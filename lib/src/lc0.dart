@@ -219,6 +219,14 @@ class Lc0 {
       onStdout: (line) {
         if (!_stdoutController.isClosed) _stdoutController.add(line);
       },
+      onReaderFailed: (error) {
+        _logger.severe(
+          'The reader for the engine died, so nothing is draining its output any more. '
+          'The engine will stop answering as soon as its pipe fills, so this session is '
+          'over. $diagnostics\n$error',
+        );
+        _state._setValue(Lc0State.error);
+      },
     );
     _engine = engine;
 
@@ -422,6 +430,7 @@ class _RunningEngine {
   _RunningEngine({
     required void Function(int exitCode) onExit,
     required void Function(String line) onStdout,
+    required void Function(String error) onReaderFailed,
   }) {
     mainPort.listen((message) {
       _logger.fine('The main isolate sent $message');
@@ -436,6 +445,12 @@ class _RunningEngine {
       if (message == null) {
         _logger.fine('The stdout isolate has let go of the pipe');
         if (!readerStopped.isCompleted) readerStopped.complete();
+        return;
+      }
+
+      // The reader reporting that it died rather than finished.
+      if (message is Map) {
+        onReaderFailed('${message['error']}\n${message['stackTrace']}');
         return;
       }
 
@@ -528,6 +543,24 @@ void _isolateMain(SendPort mainPort) {
 }
 
 void _isolateStdout(SendPort stdoutPort) {
+  try {
+    _readStdout(stdoutPort);
+  } catch (error, stackTrace) {
+    // This isolate is the only thing draining the engine's pipe. If it stops
+    // without saying so the pipe fills, the engine blocks in write() inside its
+    // UCI loop and answers nothing from then on -- a wedge with no visible
+    // cause. Reporting the failure lets the handle fail the engine instead.
+    stdoutPort.send({'error': '$error', 'stackTrace': '$stackTrace'});
+  }
+
+  // Tells the handle the pipe is free. Until this arrives the isolate is
+  // still blocked reading it, and a create() that drained the pipe in the
+  // meantime would leave it blocked forever -- a second reader stealing the
+  // next engine's output.
+  stdoutPort.send(null);
+}
+
+void _readStdout(SendPort stdoutPort) {
   final bindings = _resolveBindings();
   String previous = '';
 
@@ -536,11 +569,6 @@ void _isolateStdout(SendPort stdoutPort) {
 
     if (stdout == null) {
       _logger.fine('lc0_stdout_read returns NULL');
-      // Tells the handle the pipe is free. Until this arrives the isolate is
-      // still blocked reading it, and a create() that drained the pipe in the
-      // meantime would leave it blocked forever -- a second reader stealing the
-      // next engine's output.
-      stdoutPort.send(null);
       return;
     }
 

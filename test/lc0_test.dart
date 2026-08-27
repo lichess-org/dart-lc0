@@ -101,6 +101,12 @@ class MockEngine {
 
   /// Simulates the reader isolate seeing the quit marker and returning.
   void stopReader() => _stdoutPort.send(null);
+
+  /// Simulates the reader isolate dying on an error instead of finishing.
+  void failReader(String error) {
+    _stdoutPort.send({'error': error, 'stackTrace': '<no stack>'});
+    _stdoutPort.send(null);
+  }
 }
 
 /// Drives the engine from the test.
@@ -311,6 +317,23 @@ void main() {
           controller.bindings.stdinCalls.where((c) => c == 'quit\n').length,
           1,
         );
+      });
+    });
+
+    test('fails the engine when its reader dies', () async {
+      final controller = MockEngineController();
+
+      await runWithMockLc0(controller, () async {
+        final engine = await Lc0.create();
+        expect(engine.state.value, Lc0State.ready);
+
+        // Nothing is draining the engine's output any more. It goes on running until its
+        // pipe fills and then answers nothing, so the session is over whatever it does.
+        controller.engine.failReader('Bad state: the reader blew up');
+        await pumpEventQueue();
+
+        expect(engine.state.value, Lc0State.error);
+        expect(() => engine.stdin = 'isready', throwsStateError);
       });
     });
 
