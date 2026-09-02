@@ -40,10 +40,25 @@
 #define LC0_WRITE_PIPE_FULL (-3)
 #define LC0_WRITE_PARTIAL (-4)
 
+// `weak` is what keeps these entry points reachable from Dart on iOS.
+//
+// Under Swift Package Manager this library is linked statically into the app
+// binary rather than shipped as its own framework, so Dart resolves the symbols
+// with dlsym(RTLD_DEFAULT, ...) against the app itself. Xcode's install/archive
+// step runs `strip` over that binary with its default "All Symbols" style,
+// which deletes ordinary global symbols from both the symbol table and the
+// exports trie -- after which the lookup fails with "symbol not found", but
+// only in an archived build. Weak definitions are the exception: dyld has to be
+// able to coalesce them across images, so `strip` leaves them in the exports
+// trie. `visibility("default")` and `used` survive compilation and
+// dead-stripping; `weak` is what survives `strip`.
+#define LC0_ATTRS \
+  __attribute__((visibility("default"))) __attribute__((used)) __attribute__((weak))
+
 #ifdef __cplusplus
-#define LC0_EXPORT extern "C" __attribute__((visibility("default"))) __attribute__((used))
+#define LC0_EXPORT extern "C" LC0_ATTRS
 #else
-#define LC0_EXPORT __attribute__((visibility("default"))) __attribute__((used))
+#define LC0_EXPORT LC0_ATTRS
 #endif
 
 /// Creates the engine's pipes, or reuses and drains the ones a previous run
