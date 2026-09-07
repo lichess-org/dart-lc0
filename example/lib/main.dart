@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -19,7 +20,9 @@ Future<String> maiaWeightsPath() async {
   return p.join(directory.path, weightsFileName);
 }
 
-Future<void> loadWeights() async {
+/// Unpacks the bundled network next to the app's documents, and returns where
+/// it landed.
+Future<String> loadWeights() async {
   final path = await maiaWeightsPath();
   final exists = await File(path).exists();
 
@@ -32,7 +35,7 @@ Future<void> loadWeights() async {
     await File(path).writeAsBytes(bytes, flush: true);
   }
 
-  Lc0.instance.stdin = 'setoption name WeightsFile value $path';
+  return path;
 }
 
 class MyApp extends StatefulWidget {
@@ -42,12 +45,64 @@ class MyApp extends StatefulWidget {
 }
 
 class _AppState extends State<MyApp> {
-  final lc0 = Lc0.instance;
+  /// The engine, once it has started. There is at most one at a time: lc0 keeps
+  /// its state in process globals.
+  Lc0? lc0;
+
+  /// The lines the engine has written, kept here rather than in the widget so
+  /// that they survive an engine being disposed and another one created.
+  final _output = StreamController<String>.broadcast();
+
+  bool _starting = false;
+  Object? _error;
 
   @override
   void initState() {
     super.initState();
-    lc0.start().then((_) => loadWeights());
+    _start();
+  }
+
+  @override
+  void dispose() {
+    lc0?.dispose();
+    _output.close();
+    super.dispose();
+  }
+
+  Future<void> _start() async {
+    if (_starting || lc0 != null) return;
+    setState(() {
+      _starting = true;
+      _error = null;
+    });
+
+    try {
+      final engine = await Lc0.create(onStdout: _output.add);
+      final weights = await loadWeights();
+      engine.stdin = 'setoption name WeightsFile value $weights';
+      setState(() {
+        lc0 = engine;
+        _starting = false;
+      });
+    } catch (error) {
+      setState(() {
+        _error = error;
+        _starting = false;
+      });
+    }
+  }
+
+  Future<void> _stop() async {
+    final engine = lc0;
+    if (engine == null) return;
+    setState(() => lc0 = null);
+    await engine.dispose();
+  }
+
+  void _send(String command) {
+    final engine = lc0;
+    if (engine == null || engine.state.value != Lc0State.ready) return;
+    engine.stdin = command;
   }
 
   @override
@@ -61,24 +116,31 @@ class _AppState extends State<MyApp> {
           children: [
             Padding(
               padding: const EdgeInsets.all(8.0),
-              child: AnimatedBuilder(
-                animation: lc0.state,
-                builder: (_, __) => Text(
-                  'lc0.state=${lc0.state.value}',
-                  key: const ValueKey('lc0.state'),
-                ),
+              child: Text(
+                _error != null
+                    ? 'lc0 failed to start: $_error'
+                    : _starting
+                        ? 'lc0.state=starting'
+                        : 'lc0.state=${lc0?.state.value.name ?? 'none'}'
+                            '${lc0 == null ? '' : ' (${lc0!.diagnostics})'}',
+                key: const ValueKey('lc0.state'),
               ),
             ),
             Padding(
               padding: const EdgeInsets.all(8.0),
-              child: AnimatedBuilder(
-                animation: lc0.state,
-                builder: (_, __) => ElevatedButton(
-                  onPressed: lc0.state.value == Lc0State.initial
-                      ? () => lc0.start().then((_) => loadWeights())
-                      : null,
-                  child: const Text('Start Lc0'),
-                ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                spacing: 8,
+                children: [
+                  ElevatedButton(
+                    onPressed: lc0 == null && !_starting ? _start : null,
+                    child: const Text('Start Lc0'),
+                  ),
+                  ElevatedButton(
+                    onPressed: lc0 == null ? null : _stop,
+                    child: const Text('Dispose'),
+                  ),
+                ],
               ),
             ),
             Padding(
@@ -89,7 +151,7 @@ class _AppState extends State<MyApp> {
                   labelText: 'Custom UCI command',
                   hintText: 'go infinite',
                 ),
-                onSubmitted: (value) => lc0.stdin = value,
+                onSubmitted: _send,
                 textInputAction: TextInputAction.send,
               ),
             ),
@@ -106,7 +168,7 @@ class _AppState extends State<MyApp> {
                     (command) => Padding(
                       padding: const EdgeInsets.all(8.0),
                       child: ElevatedButton(
-                        onPressed: () => lc0.stdin = command,
+                        onPressed: () => _send(command),
                         child: Text(command),
                       ),
                     ),
@@ -114,7 +176,7 @@ class _AppState extends State<MyApp> {
                   .toList(growable: false),
             ),
             Expanded(
-              child: OutputWidget(lc0.stdout),
+              child: OutputWidget(_output.stream),
             ),
           ],
         ),
