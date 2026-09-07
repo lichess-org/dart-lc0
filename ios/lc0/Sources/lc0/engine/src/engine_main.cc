@@ -124,4 +124,10 @@ int lc0_engine_main(int argc, const char** argv) {
     std::cerr << "Unhandled exception: " << e.what() << std::endl;
     abort();
   }
+
+  // Explicit because this is no longer main(): only main() may fall off the end
+  // of a non-void function. Clang compiles the fall-through into the function's
+  // exception-resume block, so an engine that exited cleanly ended up in
+  // _Unwind_Resume with no exception in flight and crashed there.
+  return 0;
 }

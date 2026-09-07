@@ -173,7 +173,7 @@ index f6d90c0..089e901 100644
        // Benchmark mode, longer version.
        Benchmark benchmark;
        benchmark.Run();
-@@ -124,12 +117,6 @@ int main(int argc, const char** argv) {
+@@ -124,12 +117,17 @@ int main(int argc, const char** argv) {
        // Backend Benchmark mode.
        BackendBenchmark benchmark;
        benchmark.Run();
@@ -186,6 +186,17 @@ index f6d90c0..089e901 100644
      } else {
        lczero::ChooseAndRunEngine();
      }
+   } catch (std::exception& e) {
+     std::cerr << "Unhandled exception: " << e.what() << std::endl;
+     abort();
+   }
++
++  // Explicit because this is no longer main(): only main() may fall off the end
++  // of a non-void function. Clang compiles the fall-through into the function's
++  // exception-resume block, so an engine that exited cleanly ended up in
++  // _Unwind_Resume with no exception in flight and crashed there.
++  return 0;
+ }
 diff --git a/src/utils/logging.cc b/src/utils/logging.cc
 index b4d4aa1..60a003a 100644
 --- a/src/utils/logging.cc
