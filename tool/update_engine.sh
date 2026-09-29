@@ -8,7 +8,7 @@
 # So this is a maintainer's tool, run when bumping the engine, and its output is
 # committed.
 #
-# Usage: tools/update_engine.sh [lc0-tag]
+# Usage: tool/update_engine.sh [lc0-tag]
 
 set -euo pipefail
 

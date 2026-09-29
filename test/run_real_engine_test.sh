@@ -14,7 +14,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$here/.."
 
 if [ ! -d "$root/ios/lc0/Sources/lc0/engine/src" ]; then
-  echo "The vendored engine is missing. Run tools/update_engine.sh." >&2
+  echo "The vendored engine is missing. Run tool/update_engine.sh." >&2
   exit 1
 fi
 

@@ -78,7 +78,7 @@ The engine and Eigen are vendored under `ios/lc0/Sources/lc0/`, so a checkout bu
 fetching anything. The plugin ships both a Swift Package (`ios/lc0/Package.swift`) and a podspec;
 Flutter picks the package when Swift Package Manager is enabled for the host app.
 
-`tools/update_engine.sh` re-vendors the engine from upstream and re-applies `lc0.patch`. It is a
+`tool/update_engine.sh` re-vendors the engine from upstream and re-applies `lc0.patch`. It is a
 maintainer's tool — its output is committed.
 
 ## Weights

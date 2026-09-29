@@ -19,7 +19,7 @@ dart analyze lib/
 dart format lib/
 
 # Re-vendor the engine from upstream (maintainer's tool; its output is committed)
-tools/update_engine.sh
+tool/update_engine.sh
 ```
 
 ```bash
@@ -75,8 +75,8 @@ To bump the engine, edit `lc0.patch` (or apply it to a fresh clone, change what 
 regenerate it with `git add -A && git diff --cached -M`), then re-vendor:
 
 ```bash
-tools/update_engine.sh            # defaults to v0.32.1
-tools/update_engine.sh v0.33.0    # or a different tag
+tool/update_engine.sh            # defaults to v0.32.1
+tool/update_engine.sh v0.33.0    # or a different tag
 ```
 
 Keep `ios/lc0/Package.swift` and `android/CMakeLists.txt` in step with any files upstream adds or
