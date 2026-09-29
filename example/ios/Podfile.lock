@@ -1,22 +1,16 @@
 PODS:
   - Flutter (1.0.0)
-  - lc0 (1.0.0):
-    - Flutter
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
-  - lc0 (from `.symlinks/plugins/lc0/ios`)
 
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
-  lc0:
-    :path: ".symlinks/plugins/lc0/ios"
 
 SPEC CHECKSUMS:
-  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  lc0: 40d47bfbdfbba80e4f2eae8203146c0af27e81f5
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
 
-PODFILE CHECKSUM: 0e10403ab348d7c2278784a45e2ea1e14f8fd421
+PODFILE CHECKSUM: 02c437257c2765d26001f01da1f76a50fb5be301
 
 COCOAPODS: 1.16.2

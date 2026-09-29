@@ -8,5 +8,3 @@
 build/
 
 .depend
-/ios/eigen
-/ios/lc0
