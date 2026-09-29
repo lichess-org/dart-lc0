@@ -54,9 +54,8 @@ await engine.dispose();
 
 **One engine at a time.** lc0 keeps its command line, its option registry and its
 backend factories in process globals, so `create()` throws a `StateError` while
-another engine is live. Engines from *other* plugins are unaffected: this plugin
-no longer takes the process's stdin and stdout over, so an lc0 engine and a
-Stockfish engine can be resident side by side.
+another engine is live. This plugin does not takes the process's stdin and
+stdout over, so an lc0 engine and another engine can be resident side by side.
 
 ### When something goes wrong
 
